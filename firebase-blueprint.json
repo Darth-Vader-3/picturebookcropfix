@@ -1,0 +1,222 @@
+{
+  "entities": {
+    "artists": {
+      "title": "Artists",
+      "description": "Artist accounts with personal info, specialization, and categories",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "name": { "type": "string", "maxLength": 100 },
+        "firstName": { "type": "string", "maxLength": 50 },
+        "lastName": { "type": "string", "maxLength": 50 },
+        "username": { "type": "string", "maxLength": 50 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "bio": { "type": "string", "maxLength": 2000 },
+        "specialization": { "type": "string", "maxLength": 100 },
+        "categories": { "type": "array" },
+        "role": { "type": "string", "enum": ["student", "artist", "admin"] },
+        "status": { "type": "string", "enum": ["unapplied", "pending", "pending_application", "approved", "rejected", "suspended"] },
+        "artistStatus": { "type": "string", "enum": ["unapplied", "pending", "pending_application", "approved", "rejected", "suspended"] },
+        "avatar": { "type": "string", "maxLength": 100 },
+        "profilePicUrl": { "type": "string", "maxLength": 500000 },
+        "sampleImageUrl": { "type": "string", "maxLength": 500000 },
+        "isEmailVerified": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["email", "name", "role"]
+    },
+    "users": {
+      "title": "Users",
+      "description": "Synchronized user account profiles",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "name": { "type": "string", "maxLength": 100 },
+        "firstName": { "type": "string", "maxLength": 50 },
+        "lastName": { "type": "string", "maxLength": 50 },
+        "username": { "type": "string", "maxLength": 50 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "bio": { "type": "string", "maxLength": 2000 },
+        "specialization": { "type": "string", "maxLength": 100 },
+        "categories": { "type": "array" },
+        "role": { "type": "string", "enum": ["student", "artist", "admin"] },
+        "status": { "type": "string", "enum": ["unapplied", "pending", "pending_application", "approved", "rejected", "suspended"] },
+        "artistStatus": { "type": "string", "enum": ["unapplied", "pending", "pending_application", "approved", "rejected", "suspended"] },
+        "avatar": { "type": "string", "maxLength": 100 },
+        "profilePicUrl": { "type": "string", "maxLength": 500000 },
+        "sampleImageUrl": { "type": "string", "maxLength": 500000 },
+        "isEmailVerified": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "name", "role"]
+    },
+    "pending_registrations": {
+      "title": "Pending Registrations",
+      "description": "Artist accounts pending email verification",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "name": { "type": "string", "maxLength": 100 },
+        "username": { "type": "string", "maxLength": 50 },
+        "hashedPassword": { "type": "string", "maxLength": 256 },
+        "bio": { "type": "string", "maxLength": 1000 },
+        "role": { "type": "string", "maxLength": 30 },
+        "createdAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["email", "name"]
+    },
+    "books": {
+      "title": "Books",
+      "description": "Picture books created by artists",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 150 },
+        "author": { "type": "string", "maxLength": 100 },
+        "coverUrl": { "type": "string", "maxLength": 500000 },
+        "category": { "type": "string", "maxLength": 50 },
+        "language": { "type": "string", "maxLength": 20 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "authorEmail": { "type": "string", "format": "email", "maxLength": 254 }
+      },
+      "required": ["title", "author"]
+    },
+    "reports": {
+      "title": "Reports",
+      "description": "Moderation and content flag reports",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "bookId": { "type": "string", "maxLength": 128 },
+        "bookTitle": { "type": "string", "maxLength": 150 },
+        "reason": { "type": "string", "maxLength": 500 },
+        "reporterEmail": { "type": "string", "format": "email", "maxLength": 254 },
+        "status": { "type": "string", "enum": ["pending", "resolved", "dismissed"] },
+        "createdAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["bookId", "reason"]
+    },
+    "reviews": {
+      "title": "Reviews",
+      "description": "Picture book reviews and ratings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "bookId": { "type": "string", "maxLength": 128 },
+        "rating": { "type": "number" },
+        "comment": { "type": "string", "maxLength": 1000 },
+        "reviewerName": { "type": "string", "maxLength": 80 },
+        "reviewerEmail": { "type": "string", "format": "email", "maxLength": 254 },
+        "createdAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["bookId", "rating"]
+    },
+    "system_config": {
+      "title": "System Configuration & Remote Kill Switch",
+      "description": "Remote control flags, maintenance mode settings, and OTA manifest pointers",
+      "type": "object",
+      "properties": {
+        "isAppDisabled": { "type": "boolean" },
+        "maintenanceMode": { "type": "boolean" },
+        "maintenanceMessage": { "type": "string", "maxLength": 1000 },
+        "minRequiredVersion": { "type": "string", "maxLength": 30 },
+        "activeHotfixVersion": { "type": "string", "maxLength": 30 },
+        "emergencyBanner": { "type": "string", "maxLength": 500 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      }
+    },
+    "feedback_reports": {
+      "title": "Beta Feedback & Bug Reports",
+      "description": "User bug reports and beta tester feedback with sanitized diagnostic context",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["bug", "feedback", "feature_request"] },
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "userEmail": { "type": "string", "format": "email", "maxLength": 254 },
+        "appVersion": { "type": "string", "maxLength": 30 },
+        "environment": { "type": "string", "maxLength": 30 },
+        "logs": { "type": "string", "maxLength": 10000 },
+        "createdAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["type", "title", "description"]
+    },
+    "ota_manifests": {
+      "title": "OTA Hotfix Manifests",
+      "description": "Over-the-Air bundle releases, patch notes, and integrity checksums",
+      "type": "object",
+      "properties": {
+        "version": { "type": "string", "maxLength": 30 },
+        "releaseDate": { "type": "string", "maxLength": 50 },
+        "mandatory": { "type": "boolean" },
+        "patchNotes": { "type": "string", "maxLength": 2000 },
+        "bundleChecksum": { "type": "string", "maxLength": 128 },
+        "downloadUrl": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["version"]
+    },
+    "direct_messages": {
+      "title": "Direct Messages",
+      "description": "Direct reader and parent messages sent to artists with required sender identification",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 100 },
+        "senderEmail": { "type": "string", "format": "email", "maxLength": 254 },
+        "senderUid": { "type": "string", "maxLength": 128 },
+        "messageText": { "type": "string", "maxLength": 2000 },
+        "artistName": { "type": "string", "maxLength": 100 },
+        "bookTitle": { "type": "string", "maxLength": 150 },
+        "senderRole": { "type": "string", "maxLength": 50 },
+        "sentAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["senderName", "senderEmail", "messageText"]
+    }
+  },
+  "firestore": {
+    "/direct_messages/{msgId}": {
+      "schema": { "$ref": "#/entities/direct_messages" },
+      "description": "Messages sent to artists with sender contact identification"
+    },
+    "/artists/{email}": {
+      "schema": { "$ref": "#/entities/artists" },
+      "description": "Artist directory and verified profiles"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/users" },
+      "description": "User profiles synchronized with auth accounts"
+    },
+    "/books/{bookId}": {
+      "schema": { "$ref": "#/entities/books" },
+      "description": "Published and draft picture books"
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/reports" },
+      "description": "Moderation and content flag reports"
+    },
+    "/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/reviews" },
+      "description": "User reviews and star ratings on picture books"
+    },
+    "/pending_registrations/{email}": {
+      "schema": { "$ref": "#/entities/pending_registrations" },
+      "description": "Registrations awaiting email confirmation"
+    },
+    "/system_config/{configId}": {
+      "schema": { "$ref": "#/entities/system_config" },
+      "description": "Remote kill switch and application control flags"
+    },
+    "/feedback_reports/{reportId}": {
+      "schema": { "$ref": "#/entities/feedback_reports" },
+      "description": "Beta testing bug submissions and user feedback"
+    },
+    "/ota_manifests/{manifestId}": {
+      "schema": { "$ref": "#/entities/ota_manifests" },
+      "description": "OTA hotfix metadata and release bundle manifests"
+    }
+  }
+}

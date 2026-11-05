@@ -1,0 +1,139 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
+  --font-heading: "Fraunces", Georgia, serif;
+  --font-serif: "Fraunces", Georgia, serif;
+  --font-poppins: "Fraunces", Georgia, serif;
+  --font-inter: "Plus Jakarta Sans", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  
+  --color-brand-orange: #f97316;
+  --color-brand-orange-light: #fff7ed;
+  --color-brand-orange-dark: #ea580c;
+  --color-brand-cream: #fdf8f5;
+}
+
+*, ::before, ::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+@media (min-width: 640px) {
+  html {
+    font-size: 18px;
+  }
+}
+
+html, body, #root {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  box-sizing: border-box;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+main, section, header, footer, div, input, button, select, textarea {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+h1, h2, h3, h4, h5, h6,
+.font-display,
+.font-heading,
+.font-poppins,
+.card-title,
+.heading-font {
+  font-family: var(--font-display);
+}
+
+p, span, label, input, textarea, select, td, th, li, a, button, .btn {
+  font-family: var(--font-sans);
+}
+
+h1 *, h2 *, h3 *, h4 *, h5 *, h6 *, button *, .font-display *, .font-heading * {
+  font-family: inherit;
+}
+
+@layer utilities {
+  .bubble-shadow-orange {
+    box-shadow: 0 6px 0 0 #c2410c, 0 10px 15px -3px rgba(0,0,0,0.1);
+  }
+  .bubble-shadow-green {
+    box-shadow: 0 6px 0 0 #15803d, 0 10px 15px -3px rgba(0,0,0,0.1);
+  }
+  .bubble-shadow-blue {
+    box-shadow: 0 6px 0 0 #1abc9c, 0 10px 15px -3px rgba(0,0,0,0.1);
+  }
+  .kids-card-shadow {
+    box-shadow: 0 8px 0 0 rgba(0,0,0,0.06);
+  }
+
+  /* Custom Slim & Rounded Scrollbar */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+    border-radius: 9999px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(249, 115, 22, 0.35);
+    border-radius: 9999px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(249, 115, 22, 0.65);
+  }
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(249, 115, 22, 0.35) transparent;
+  }
+
+  .dark .custom-scrollbar::-webkit-scrollbar-thumb,
+  [data-theme="night"] .custom-scrollbar::-webkit-scrollbar-thumb,
+  .custom-scrollbar-night::-webkit-scrollbar-thumb {
+    background: rgba(251, 191, 36, 0.35);
+    border-radius: 9999px;
+  }
+  .dark .custom-scrollbar::-webkit-scrollbar-thumb:hover,
+  [data-theme="night"] .custom-scrollbar::-webkit-scrollbar-thumb:hover,
+  .custom-scrollbar-night::-webkit-scrollbar-thumb:hover {
+    background: rgba(251, 191, 36, 0.65);
+  }
+  .dark .custom-scrollbar,
+  [data-theme="night"] .custom-scrollbar,
+  .custom-scrollbar-night {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(251, 191, 36, 0.35) transparent;
+  }
+}
+
+/* Global scrollbar rules for cross-browser fallback outside layers */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(249, 115, 22, 0.35);
+  border-radius: 9999px;
+}
+.custom-scrollbar-night::-webkit-scrollbar-thumb {
+  background: rgba(251, 191, 36, 0.35);
+  border-radius: 9999px;
+}
+
+
