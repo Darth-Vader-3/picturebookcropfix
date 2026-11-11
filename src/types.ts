@@ -21,6 +21,8 @@ export interface UserAccount {
   specialization?: string;
   artistApplicationSubmitted?: boolean;
   artistApplicationDate?: string;
+  adminVerified?: boolean;
+  verifiedAt?: string;
   isLoggedIn: boolean;
   createdAt?: string;
   uid?: string;

@@ -1,10 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { PictureBook, BookPage, ArtFormType, Subscriber, DirectMessage, BookReview, UserFileMetadata } from '../types';
-import { Sparkles, Plus, Trash2, ArrowLeft, Paintbrush, BookOpen, Layers, Check, HelpCircle, Share2, Copy, ExternalLink, MessageSquare, Send, User, Mail, Lock, Phone, ShieldCheck, Key, Settings, Camera, Palette, Eye, EyeOff, Star, Save, AlertTriangle, Loader2, Folder, Download, FileText, Image as ImageIcon, Film, UploadCloud, CheckCircle2, RefreshCw, File, Tag, Search, Filter } from 'lucide-react';
+import { Sparkles, Plus, Trash2, ArrowLeft, Paintbrush, BookOpen, Layers, Check, HelpCircle, Share2, Copy, ExternalLink, MessageSquare, Send, User, Mail, Lock, Phone, ShieldCheck, Key, Settings, Camera, Palette, Eye, EyeOff, Star, Save, AlertTriangle, Loader2, Folder, Download, FileText, Image as ImageIcon, Film, UploadCloud, CheckCircle2, RefreshCw, File, Tag, Search, Filter, Clock, FileCheck, LogOut, Sun, Moon, Users, FolderArchive, Edit3, Music, ShieldAlert, XCircle } from 'lucide-react';
 import { playChime, scanForInappropriateContent, maskEmail, INITIAL_BOOKS } from '../data';
 import { compressImageFile, safeSetItem, safeGetItem, safeGetJSON } from '../utils/storage';
 import { UserAccount } from './AuthModal';
-import { registerArtistWithFirebase, signOutFromFirebaseAndClearSession, deleteArtistAccountFromCloudAndLocal, saveBookToFirestore, uploadArtistFileToStorage, fetchUserFilesFromFirestore, subscribeToUserFiles, downloadArtistFileFromStorage, deleteArtistFileAndSync, updateUserFileMetadataInFirestore, auth, syncProfileToFirestore, fetchProfileFromFirestore } from '../firebase';
+import { registerArtistWithFirebase, updateArtistStatusInFirestore, signOutFromFirebaseAndClearSession, deleteArtistAccountFromCloudAndLocal, saveBookToFirestore, uploadArtistFileToStorage, fetchUserFilesFromFirestore, subscribeToUserFiles, downloadArtistFileFromStorage, deleteArtistFileAndSync, updateUserFileMetadataInFirestore, auth, syncProfileToFirestore, fetchProfileFromFirestore, getUserAndArtistDoc } from '../firebase';
 
 interface ArtistWorkbenchProps {
   onPublish: (newBook: PictureBook) => void;
@@ -452,16 +452,99 @@ export default function ArtistWorkbench({
   const [appSuccessMsg, setAppSuccessMsg] = useState<string | null>(null);
   const appFileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Status checks for artist application
-  const isApprovedArtist = userAccount?.role === 'admin' || userAccount?.status === 'approved' || userAccount?.artistStatus === 'approved';
+  // Status checks for artist application: Artists are approved when marked approved by admin, adminVerified is true, or role is admin
+  const isApprovedArtist = userAccount?.role === 'admin' ||
+    userAccount?.status === 'approved' ||
+    userAccount?.artistStatus === 'approved' ||
+    userAccount?.adminVerified === true;
+
   const isPendingArtist = !isApprovedArtist && (
     userAccount?.status === 'pending' ||
     userAccount?.status === 'pending_application' ||
+    userAccount?.artistStatus === 'pending' ||
     userAccount?.artistStatus === 'pending_application' ||
     Boolean(userAccount?.artistApplicationSubmitted)
   );
-  const isUnappliedArtist = !isApprovedArtist && !isPendingArtist;
+
+  const isRejectedArtist = !isApprovedArtist && !isPendingArtist && (
+    userAccount?.status === 'rejected' ||
+    userAccount?.artistStatus === 'rejected'
+  );
+
+  const isUnappliedArtist = !isApprovedArtist && !isPendingArtist && !isRejectedArtist;
   const isApplicationSubmitted = isPendingArtist || isApprovedArtist;
+
+  // Real-time synchronization: listen for admin status update events
+  useEffect(() => {
+    const handleStatusUpdated = (e: any) => {
+      const detail = e.detail;
+      if (detail && userAccount?.email && detail.email?.toLowerCase() === userAccount.email.toLowerCase()) {
+        const isApproved = detail.status === 'approved' || detail.adminVerified === true;
+        if (onUpdateUserAccount && userAccount) {
+          onUpdateUserAccount({
+            ...userAccount,
+            status: detail.status,
+            artistStatus: detail.status,
+            adminVerified: isApproved,
+            ...(isApproved ? { verifiedAt: new Date().toISOString() } : {})
+          });
+        }
+      }
+    };
+    window.addEventListener('digipicture_artist_status_updated', handleStatusUpdated);
+    return () => {
+      window.removeEventListener('digipicture_artist_status_updated', handleStatusUpdated);
+    };
+  }, [userAccount?.email, onUpdateUserAccount]);
+
+  // Auto-sync status from local registry and Firestore on workbench mount / account change
+  useEffect(() => {
+    if (!userAccount?.email) return;
+    const cleanEmail = userAccount.email.trim().toLowerCase();
+
+    // 1. Instant check in local registered artists
+    try {
+      const list = safeGetJSON<any[]>('digipicture_registered_artists', []);
+      if (Array.isArray(list)) {
+        const found = list.find((a: any) => a && a.email?.trim().toLowerCase() === cleanEmail);
+        if (found) {
+          const isFoundApproved = found.status === 'approved' || found.artistStatus === 'approved' || found.adminVerified === true;
+          if (isFoundApproved && (!userAccount.adminVerified || userAccount.status !== 'approved')) {
+            if (onUpdateUserAccount) {
+              onUpdateUserAccount({
+                ...userAccount,
+                status: 'approved',
+                artistStatus: 'approved',
+                adminVerified: true,
+                verifiedAt: found.verifiedAt || new Date().toISOString()
+              });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Local sync check notice:", e);
+    }
+
+    // 2. Fresh Firestore check
+    getUserAndArtistDoc(cleanEmail, userAccount.uid).then(({ artistDoc, userDoc }) => {
+      const docData = artistDoc || userDoc;
+      if (docData) {
+        const isDocApproved = docData.status === 'approved' || docData.artistStatus === 'approved' || docData.adminVerified === true;
+        if (isDocApproved && (!userAccount.adminVerified || userAccount.status !== 'approved')) {
+          if (onUpdateUserAccount) {
+            onUpdateUserAccount({
+              ...userAccount,
+              status: 'approved',
+              artistStatus: 'approved',
+              adminVerified: true,
+              verifiedAt: docData.verifiedAt || new Date().toISOString()
+            });
+          }
+        }
+      }
+    }).catch(() => {});
+  }, [userAccount?.email]);
 
   const isVideoMedia = (url?: string, fileName?: string): boolean => {
     if (!url) return false;
@@ -550,7 +633,8 @@ export default function ArtistWorkbench({
         role: 'artist',
         isLoggedIn: true,
         artistApplicationSubmitted: true,
-        artistApplicationDate: new Date().toISOString()
+        artistApplicationDate: new Date().toISOString(),
+        adminVerified: false
       };
 
       if (onUpdateUserAccount) {
@@ -571,6 +655,7 @@ export default function ArtistWorkbench({
           status: 'pending_application',
           artistStatus: 'pending_application',
           role: 'artist',
+          adminVerified: false,
           createdAt: new Date().toISOString()
         };
         if (existingIdx >= 0) {
@@ -591,6 +676,7 @@ export default function ArtistWorkbench({
         status: 'pending_application',
         artistStatus: 'pending_application',
         role: 'artist',
+        adminVerified: false,
         createdAt: new Date().toISOString()
       });
 
@@ -685,6 +771,27 @@ export default function ArtistWorkbench({
 
   // Launch fresh book creator form
   const startNewBook = () => {
+    if (!isApprovedArtist) {
+      if (isPendingArtist) {
+        alert(language === 'en' 
+          ? '⏳ Artist Application Pending: Your application is currently under review by an administrator. You can only create and publish picture books after your account has been approved.'
+          : '⏳ Ombi Linasubiri: Ombi lako linakaguliwa na msimamizi. Unaweza kutengeneza na kuchapisha vitabu baada ya kuidhinishwa na msimamizi.');
+        handleOpenApplicationModal();
+        return;
+      }
+      if (isRejectedArtist) {
+        alert(language === 'en'
+          ? '❌ Application Declined: Your previous artist application was declined by the administrator. Please update your artwork sample and re-apply to be verified.'
+          : '❌ Ombi Halikuidhinishwa: Ombi lako lilikataliwa na msimamizi. Tafadhali sasisha sampuli ya kazi yako na utume ombi jipya.');
+        handleOpenApplicationModal();
+        return;
+      }
+      alert(language === 'en'
+        ? '🎨 Verification Application Required: Please submit your artist application with a sample of your artwork to the administrator for approval before creating picture books.'
+        : '🎨 Ombi la Uhakiki Linahitajika: Tafadhali wasilisha ombi lako na sampuli ya kazi yako kwa msimamizi ili uidhinishwe kabla ya kutengeneza vitabu.');
+      handleOpenApplicationModal();
+      return;
+    }
     setEditingBookId(null);
     setTitle('');
     setDescription('');
@@ -1126,10 +1233,10 @@ export default function ArtistWorkbench({
     try {
       const textToScan = `${title} ${description} ${tags} ${pages.map(p => `${p.title} ${p.narrative} ${p.educationBuddyTip}`).join(' ')}`;
       const scanResult = scanForInappropriateContent(textToScan);
-      const isApprovedArtist = userAccount?.role === 'admin' || userAccount?.status === 'approved' || userAccount?.artistStatus === 'approved';
+      const isApproved = userAccount?.role === 'admin' || ((userAccount?.status === 'approved' || userAccount?.artistStatus === 'approved') && userAccount?.adminVerified === true);
       let finalStatus: 'published' | 'draft' | 'pending_review' | 'pending_approval' | 'flagged' = targetStatus;
 
-      if (targetStatus === 'published' && !isApprovedArtist) {
+      if (targetStatus === 'published' && !isApproved) {
         finalStatus = 'pending_approval';
       }
 
@@ -1612,7 +1719,7 @@ export default function ArtistWorkbench({
               id="workbench-theme-toggle-btn"
               title={language === 'en' ? 'Toggle Day / Night Mode' : 'Badilisha Mchana / Usiku'}
             >
-              <span>{isNight ? '🌙' : '☀️'}</span>
+              {isNight ? <Moon className="w-3.5 h-3.5 text-amber-300" /> : <Sun className="w-3.5 h-3.5 text-amber-600" />}
               <span className="hidden sm:inline">
                 {isNight ? (language === 'en' ? 'Night' : 'Usiku') : (language === 'en' ? 'Day' : 'Mchana')}
               </span>
@@ -1629,7 +1736,8 @@ export default function ArtistWorkbench({
               className="flex items-center gap-1.5 px-2.5 py-2 sm:px-4 sm:py-2.5 rounded-2xl bg-red-950 border-2 border-red-800 text-red-200 hover:bg-red-900 transition font-display font-bold text-[11px] sm:text-xs cursor-pointer shadow-sm whitespace-nowrap text-nowrap shrink-0"
               id="workbench-admin-logout"
             >
-              🔒 {language === 'en' ? 'Exit Admin Mode' : 'Ondoka Kwenye Admin'}
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>{language === 'en' ? 'Exit Admin Mode' : 'Ondoka Kwenye Admin'}</span>
             </button>
           )}
 
@@ -1642,7 +1750,8 @@ export default function ArtistWorkbench({
               className="flex items-center gap-1.5 px-2.5 py-2 sm:px-4 sm:py-2.5 rounded-2xl bg-stone-900 border-2 border-rose-900 text-rose-300 hover:bg-rose-950 transition font-display font-bold text-[11px] sm:text-xs cursor-pointer shadow-sm whitespace-nowrap text-nowrap shrink-0"
               id="workbench-logout-artist"
             >
-              🚪 {language === 'en' ? 'Log Out' : 'Toka'}
+              <LogOut className="w-3.5 h-3.5" />
+              <span>{language === 'en' ? 'Log Out' : 'Toka'}</span>
             </button>
           )}
 
@@ -1659,7 +1768,7 @@ export default function ArtistWorkbench({
               }`}
               title="English"
             >
-              🇬🇧 EN
+              EN
             </button>
             <button
               onClick={() => { setLanguage('sw'); playChime('pop'); }}
@@ -1670,19 +1779,25 @@ export default function ArtistWorkbench({
               }`}
               title="Kiswahili"
             >
-              🇰🇪 SW
+              SW
             </button>
           </div>
         </div>
 
         <div className="text-left md:text-right">
-          <h1 className={`text-xl md:text-2xl font-display font-bold flex items-center md:justify-end gap-1.5 leading-none ${
+          <h1 className={`text-xl md:text-2xl font-display font-bold flex items-center md:justify-end gap-2 leading-none ${
             isNight ? 'text-amber-100' : 'text-amber-955'
           }`}>
             {isAdminMode ? (
-              <>🔑 {language === 'en' ? 'Admin Moderation Portal' : 'Tovuti ya Moderation ya Admin'}</>
+              <>
+                <ShieldAlert className="w-5 h-5 text-amber-500 shrink-0" />
+                <span>{language === 'en' ? 'Admin Moderation Portal' : 'Tovuti ya Moderation ya Admin'}</span>
+              </>
             ) : (
-              <>🎨 {language === 'en' ? 'Creator Studio Workbench' : 'Meza ya Kazi ya Msanii'}</>
+              <>
+                <Palette className="w-5 h-5 text-amber-500 shrink-0" />
+                <span>{language === 'en' ? 'Creator Studio Workbench' : 'Meza ya Kazi ya Msanii'}</span>
+              </>
             )}
           </h1>
           {!activeArtistName && !isAdminMode && (
@@ -1696,41 +1811,91 @@ export default function ArtistWorkbench({
 
 
       {userAccount?.role === 'artist' && isPendingArtist && (
-        <div className="max-w-5xl mx-auto w-full mb-6 p-4 rounded-2xl bg-red-500/15 border-2 border-red-500/50 text-red-900 dark:text-red-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md animate-fade-in">
+        <div className="max-w-5xl mx-auto w-full mb-6 p-4 rounded-2xl bg-amber-500/15 border-2 border-amber-500/50 text-amber-900 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md animate-fade-in">
           <div className="flex items-start sm:items-center gap-3">
-            <span className="text-2xl shrink-0">⏳</span>
+            <Clock className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
             <div className="flex-1 text-xs sm:text-sm">
-              <p className="font-bold font-display text-red-900 dark:text-red-100">
+              <p className="font-bold font-display text-amber-900 dark:text-amber-100">
                 {language === 'en' ? 'Artist Verification Application Pending' : 'Uhakiki wa Akaunti ya Msanii Unasubiri'}
               </p>
-              <p className="mt-0.5 text-red-800 dark:text-red-300">
+              <p className="mt-0.5 text-amber-800 dark:text-amber-300">
                 {language === 'en'
-                  ? 'Your application with sample artwork is currently being reviewed by an administrator. Edits are locked while pending review.'
-                  : 'Ombi lako na sampuli ya kazi linakaguliwa na msimamizi. Huwezi kubadilisha maelezo kwa sasa.'}
+                  ? 'Your application with sample artwork is currently being reviewed by an administrator. Picture book creation will unlock once approved.'
+                  : 'Ombi lako na sampuli ya kazi linakaguliwa na msimamizi. Utaruhusiwa kutengeneza vitabu baada ya kuidhinishwa.'}
               </p>
             </div>
           </div>
           <button
             onClick={handleOpenApplicationModal}
-            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-display font-bold text-xs rounded-xl border border-red-700 shadow-sm cursor-pointer whitespace-nowrap self-start sm:self-center shrink-0 flex items-center gap-1.5"
+            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-display font-bold text-xs rounded-xl border border-amber-700 shadow-sm cursor-pointer whitespace-nowrap self-start sm:self-center shrink-0 flex items-center gap-1.5"
           >
-            <span>⏳</span>
-            <span>{language === 'en' ? 'Pending' : 'Inasubiri'}</span>
+            <Clock className="w-3.5 h-3.5" />
+            <span>{language === 'en' ? 'Pending Review' : 'Inasubiri Ukaguzi'}</span>
           </button>
         </div>
       )}
 
-      {userAccount?.role === 'artist' && (userAccount?.status === 'suspended' || userAccount?.status === 'rejected') && (
+      {userAccount?.role === 'artist' && isRejectedArtist && (
+        <div className="max-w-5xl mx-auto w-full mb-6 p-4 rounded-2xl bg-rose-500/15 border-2 border-rose-500/50 text-rose-900 dark:text-rose-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md animate-fade-in">
+          <div className="flex items-start sm:items-center gap-3">
+            <XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5 sm:mt-0" />
+            <div className="flex-1 text-xs sm:text-sm">
+              <p className="font-bold font-display text-rose-900 dark:text-rose-100">
+                {language === 'en' ? 'Artist Verification Application Declined' : 'Ombi la Msanii Limekataliwa'}
+              </p>
+              <p className="mt-0.5 text-rose-800 dark:text-rose-300">
+                {language === 'en'
+                  ? 'Your previous verification application was not approved by the administrator. Please upload a revised artwork sample and re-apply.'
+                  : 'Ombi lako la awali halikuidhinishwa na msimamizi. Tafadhali pakia sampuli mpya ya kazi yako na uombe tena.'}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleOpenApplicationModal}
+            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-display font-bold text-xs rounded-xl border border-rose-700 shadow-sm cursor-pointer whitespace-nowrap self-start sm:self-center shrink-0 flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>{language === 'en' ? 'Re-apply with Artwork' : 'Omba Tena na Sampuli'}</span>
+          </button>
+        </div>
+      )}
+
+      {userAccount?.role === 'artist' && isUnappliedArtist && (
+        <div className="max-w-5xl mx-auto w-full mb-6 p-4 rounded-2xl bg-amber-500/15 border-2 border-amber-500/50 text-amber-900 dark:text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md animate-fade-in">
+          <div className="flex items-start sm:items-center gap-3">
+            <FileCheck className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+            <div className="flex-1 text-xs sm:text-sm">
+              <p className="font-bold font-display text-amber-900 dark:text-amber-100">
+                {language === 'en' ? 'Artist Verification Application Required' : 'Ombi la Uhakiki wa Msanii Linahitajika'}
+              </p>
+              <p className="mt-0.5 text-amber-800 dark:text-amber-300">
+                {language === 'en'
+                  ? 'To publish and create digital picture books, submit your artist application with a sample of your artwork for administrator verification.'
+                  : 'Ili kuchapisha vitabu, wasilisha ombi lako na sampuli ya kazi yako kwa msimamizi ili uidhinishwe.'}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={handleOpenApplicationModal}
+            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-display font-bold text-xs rounded-xl border border-amber-700 shadow-sm cursor-pointer whitespace-nowrap self-start sm:self-center shrink-0 flex items-center gap-1.5"
+          >
+            <FileCheck className="w-3.5 h-3.5" />
+            <span>{language === 'en' ? 'Submit Application' : 'Tuma Ombi'}</span>
+          </button>
+        </div>
+      )}
+
+      {userAccount?.role === 'artist' && userAccount?.status === 'suspended' && (
         <div className="max-w-5xl mx-auto w-full mb-6 p-4 rounded-2xl bg-rose-500/15 border-2 border-rose-500/50 text-rose-900 dark:text-rose-200 flex items-start sm:items-center gap-3 shadow-md animate-fade-in">
-          <span className="text-2xl shrink-0">🚫</span>
+          <ShieldAlert className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5 sm:mt-0" />
           <div className="flex-1 text-xs sm:text-sm">
             <p className="font-bold font-display text-rose-900 dark:text-rose-100">
-              {language === 'en' ? 'Artist Account Restricted' : 'Akaunti ya Msanii Imesitishwa'}
+              {language === 'en' ? 'Artist Account Suspended' : 'Akaunti ya Msanii Imesitishwa'}
             </p>
             <p className="mt-0.5 text-rose-800 dark:text-rose-300">
               {language === 'en'
-                ? 'Your artist account status is currently restricted by the administrator. Public uploading and publishing are disabled.'
-                : 'Hali ya akaunti yako ya msanii imesitishwa au kukataliwa na msimamizi. Upakiaji na uchapishaji umefungwa.'}
+                ? 'Your artist account status is currently suspended by the administrator. Public uploading and publishing are disabled.'
+                : 'Akaunti yako ya msanii imesimamishwa na msimamizi. Upakiaji na uchapishaji umefungwa.'}
             </p>
           </div>
         </div>
@@ -2261,10 +2426,16 @@ export default function ArtistWorkbench({
               : 'bg-gradient-to-r from-amber-100/90 via-orange-50 to-amber-100/90 border-amber-200 text-amber-955 shadow-xs'
           }`}>
             <div>
-              <h2 className={`text-xl md:text-2xl font-display font-bold flex items-center gap-2 ${
+              <h2 className={`text-xl md:text-2xl font-display font-bold flex items-center gap-2.5 flex-wrap ${
                 isNight ? 'text-amber-200' : 'text-amber-955'
               }`}>
-                🌟 Welcome Back, {activeArtistName}!
+                <span>Welcome Back, {activeArtistName}!</span>
+                {isApprovedArtist && (
+                  <span className="inline-flex items-center gap-1 text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-700 dark:text-emerald-300 font-bold" title="Verified Approved Artist">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>{language === 'en' ? 'Verified Artist' : 'Msanii Aliyeidhinishwa'}</span>
+                  </span>
+                )}
               </h2>
               <p className={`text-xs md:text-sm font-medium leading-relaxed italic mt-2 max-w-xl ${
                 isNight ? 'text-slate-300' : 'text-amber-900'
@@ -2273,35 +2444,37 @@ export default function ArtistWorkbench({
               </p>
             </div>
             <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1 max-w-full no-scrollbar shrink-0 self-start md:self-auto">
-              <button
-                onClick={handleOpenApplicationModal}
-                className={`border-2 font-display font-bold text-[11px] sm:text-xs px-3 sm:px-4 py-2.5 sm:py-3.5 rounded-2xl shadow-sm active:scale-95 cursor-pointer transition flex items-center gap-1.5 whitespace-nowrap text-nowrap shrink-0 ${
-                  isApprovedArtist
-                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 shadow-emerald-500/20'
-                    : isPendingArtist
-                    ? 'bg-red-600 hover:bg-red-700 text-white border-red-700 shadow-red-500/20'
-                    : 'bg-amber-500 hover:bg-amber-600 text-slate-950 border-amber-600 animate-pulse'
-                }`}
-                id="artist-application-button"
-                title="Artist Verification Application Status"
-              >
-                {isApprovedArtist ? (
-                  <>
-                    <span className="text-sm">✅</span>
-                    <span>{language === 'en' ? 'Approved' : 'Imeidhinishwa'}</span>
-                  </>
-                ) : isPendingArtist ? (
-                  <>
-                    <span className="text-sm">⏳</span>
-                    <span>{language === 'en' ? 'Pending' : 'Inasubiri'}</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-sm">📝</span>
-                    <span>{language === 'en' ? 'Application' : 'Ombi la Usajili'}</span>
-                  </>
-                )}
-              </button>
+              {!isApprovedArtist && (
+                <button
+                  onClick={handleOpenApplicationModal}
+                  className={`border-2 font-display font-bold text-[11px] sm:text-xs px-3.5 sm:px-4 py-2.5 sm:py-3.5 rounded-2xl shadow-sm active:scale-95 cursor-pointer transition flex items-center gap-2 whitespace-nowrap text-nowrap shrink-0 ${
+                    isPendingArtist
+                      ? 'bg-amber-600 hover:bg-amber-700 text-white border-amber-700 shadow-amber-500/20'
+                      : isRejectedArtist
+                      ? 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-rose-500/20'
+                      : 'bg-amber-500 hover:bg-amber-600 text-slate-950 border-amber-600'
+                  }`}
+                  id="artist-application-button"
+                  title="Artist Verification Application Status"
+                >
+                  {isPendingArtist ? (
+                    <>
+                      <Clock className="w-4 h-4 text-white" />
+                      <span>{language === 'en' ? 'Pending Review' : 'Inasubiri Ukaguzi'}</span>
+                    </>
+                  ) : isRejectedArtist ? (
+                    <>
+                      <XCircle className="w-4 h-4 text-white" />
+                      <span>{language === 'en' ? 'Declined - Re-apply' : 'Kataliwa - Omba Tena'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileCheck className="w-4 h-4 text-slate-950" />
+                      <span>{language === 'en' ? 'Apply as Artist' : 'Ombi la Usajili'}</span>
+                    </>
+                  )}
+                </button>
+              )}
               <button
                 onClick={() => handleOpenArtistShare('portfolio')}
                 className={`border-2 font-display font-bold text-[11px] sm:text-xs px-2.5 sm:px-4 py-2.5 sm:py-3.5 rounded-2xl shadow-xs active:scale-95 cursor-pointer transition flex items-center gap-1.5 whitespace-nowrap text-nowrap shrink-0 ${
@@ -2332,7 +2505,7 @@ export default function ArtistWorkbench({
             <button
               type="button"
               onClick={() => { setDashboardTab('books'); playChime('pop'); }}
-              className={`px-4 py-2 rounded-xl font-display font-bold text-xs transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-4 py-2 rounded-xl font-display font-bold text-xs transition cursor-pointer flex items-center gap-2 whitespace-nowrap ${
                 dashboardTab === 'books'
                   ? 'bg-amber-500 text-slate-955 border-b-2 border-amber-700 shadow-sm'
                   : (isNight
@@ -2340,12 +2513,13 @@ export default function ArtistWorkbench({
                       : 'bg-white border border-amber-200 text-amber-955 hover:bg-amber-100/60')
               }`}
             >
-              📚 My Books ({myBooks.length})
+              <BookOpen className="w-4 h-4" />
+              <span>My Books ({myBooks.length})</span>
             </button>
             <button
               type="button"
               onClick={() => { setDashboardTab('subscribers'); playChime('pop'); }}
-              className={`px-4 py-2 rounded-xl font-display font-bold text-xs transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-4 py-2 rounded-xl font-display font-bold text-xs transition cursor-pointer flex items-center gap-2 whitespace-nowrap ${
                 dashboardTab === 'subscribers'
                   ? 'bg-amber-500 text-slate-955 border-b-2 border-amber-700 shadow-sm'
                   : (isNight
@@ -2353,12 +2527,13 @@ export default function ArtistWorkbench({
                       : 'bg-white border border-amber-200 text-amber-955 hover:bg-amber-100/60')
               }`}
             >
-              👥 Student Subscribers ({mySubscribers.length})
+              <Users className="w-4 h-4" />
+              <span>Student Subscribers ({mySubscribers.length})</span>
             </button>
             <button
               type="button"
               onClick={() => { setDashboardTab('messages'); playChime('pop'); }}
-              className={`px-4 py-2 rounded-xl font-display font-bold text-xs transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-4 py-2 rounded-xl font-display font-bold text-xs transition cursor-pointer flex items-center gap-2 whitespace-nowrap ${
                 dashboardTab === 'messages'
                   ? 'bg-amber-500 text-slate-955 border-b-2 border-amber-700 shadow-sm'
                   : (isNight
@@ -2366,12 +2541,13 @@ export default function ArtistWorkbench({
                       : 'bg-white border border-amber-200 text-amber-955 hover:bg-amber-100/60')
               }`}
             >
-              💬 Messages & Feedback ({directMessages.length + Object.values(bookReviews).reduce((acc, curr) => acc + curr.length, 0)})
+              <MessageSquare className="w-4 h-4" />
+              <span>Messages & Feedback ({directMessages.length + Object.values(bookReviews).reduce((acc, curr) => acc + curr.length, 0)})</span>
             </button>
             <button
               type="button"
               onClick={() => { setDashboardTab('storage'); playChime('pop'); }}
-              className={`px-4 py-2 rounded-xl font-display font-bold text-xs transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-4 py-2 rounded-xl font-display font-bold text-xs transition cursor-pointer flex items-center gap-2 whitespace-nowrap ${
                 dashboardTab === 'storage'
                   ? 'bg-amber-500 text-slate-955 border-b-2 border-amber-700 shadow-sm'
                   : (isNight
@@ -2380,12 +2556,13 @@ export default function ArtistWorkbench({
               }`}
               id="dashboard-storage-tab-btn"
             >
-              📁 File Storage & Assets ({userFiles.length})
+              <FolderArchive className="w-4 h-4" />
+              <span>File Storage & Assets ({userFiles.length})</span>
             </button>
             <button
               type="button"
               onClick={() => { setDashboardTab('profile'); playChime('pop'); }}
-              className={`px-4 py-2 rounded-xl font-display font-bold text-xs transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-4 py-2 rounded-xl font-display font-bold text-xs transition cursor-pointer flex items-center gap-2 whitespace-nowrap ${
                 dashboardTab === 'profile'
                   ? 'bg-amber-500 text-slate-955 border-b-2 border-amber-700 shadow-sm'
                   : (isNight
@@ -2393,7 +2570,8 @@ export default function ArtistWorkbench({
                       : 'bg-white border border-amber-200 text-amber-955 hover:bg-amber-100/60')
               }`}
             >
-              🎨 Profile & Studio Settings
+              <Settings className="w-4 h-4" />
+              <span>Profile & Studio Settings</span>
             </button>
           </div>
 
@@ -2460,17 +2638,17 @@ export default function ArtistWorkbench({
                               <span className={`text-[9px] font-bold px-2 py-0.5 rounded border ${
                                 isNight ? 'bg-slate-800 text-slate-300 border-slate-700' : 'bg-amber-100 text-amber-900 border-amber-200'
                               }`}>
-                                📝 Draft (Private)
+                                Draft (Private)
                               </span>
                             ) : book.status === 'flagged' ? (
                               <span className="text-[9px] font-bold bg-rose-950 text-rose-300 px-2 py-0.5 rounded border border-rose-800">
-                                🚩 Flagged & Hidden
+                                Flagged & Hidden
                               </span>
                             ) : (
                               <span className={`text-[9px] font-bold px-2 py-0.5 rounded border ${
                                 isNight ? 'bg-emerald-950 text-emerald-300 border-emerald-800' : 'bg-emerald-100 text-emerald-900 border-emerald-300'
                               }`}>
-                                🚀 Published
+                                Published
                               </span>
                             )}
 
@@ -2478,7 +2656,7 @@ export default function ArtistWorkbench({
                               <span className={`text-[9px] font-bold px-2 py-0.5 rounded border ${
                                 isNight ? 'bg-purple-950 text-purple-300 border-purple-800' : 'bg-purple-100 text-purple-900 border-purple-300'
                               }`}>
-                                👥 {book.contributors.length} Artists
+                                {book.contributors.length} Artists
                               </span>
                             )}
 
@@ -2495,7 +2673,7 @@ export default function ArtistWorkbench({
                             <span className={`text-[9px] font-bold px-2 py-0.5 rounded border ${
                               isNight ? 'bg-orange-950 text-orange-300 border-orange-800' : 'bg-orange-100 text-orange-900 border-orange-200'
                             }`}>
-                              📄 {book.pages.length} {book.pages.length === 1 ? 'Page' : 'Pages'}
+                              {book.pages.length} {book.pages.length === 1 ? 'Page' : 'Pages'}
                             </span>
                           </div>
                         </div>
@@ -2517,21 +2695,23 @@ export default function ArtistWorkbench({
                           <div className="grid grid-cols-2 gap-2">
                             <button
                               onClick={() => startEditingBook(book)}
-                              className="py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-slate-955 font-display font-bold text-xs rounded-xl shadow-xs transition cursor-pointer flex items-center justify-center gap-1 active:scale-98"
+                              className="py-2 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-slate-955 font-display font-bold text-xs rounded-xl shadow-xs transition cursor-pointer flex items-center justify-center gap-1.5 active:scale-98"
                               id={`edit-book-btn-${book.id}`}
                             >
-                              ✏️ Edit
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>{language === 'en' ? 'Edit' : 'Hariri'}</span>
                             </button>
                             <button
                               onClick={() => startAddPagesForBook(book)}
-                              className={`py-2 font-display font-bold text-xs rounded-xl border transition cursor-pointer flex items-center justify-center gap-1 active:scale-98 ${
+                              className={`py-2 font-display font-bold text-xs rounded-xl border transition cursor-pointer flex items-center justify-center gap-1.5 active:scale-98 ${
                                 isNight
                                   ? 'bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700'
                                   : 'bg-amber-100 hover:bg-amber-200 text-amber-955 border-amber-300'
                               }`}
                               id={`add-page-btn-${book.id}`}
                             >
-                              📄 +Pages
+                              <Plus className="w-3.5 h-3.5" />
+                              <span>{language === 'en' ? 'Pages' : 'Kurasa'}</span>
                             </button>
                           </div>
                           <button
@@ -5758,8 +5938,14 @@ export default function ArtistWorkbench({
             isNight ? 'bg-slate-900 border-amber-600 text-amber-100' : 'bg-white border-amber-400 text-amber-955'
           }`}>
             <div className="flex items-center justify-between border-b pb-3 border-amber-200/50">
-              <div className="flex items-center gap-2">
-                <span className="text-2xl">{isApprovedArtist ? '✅' : isPendingArtist ? '⏳' : '📝'}</span>
+              <div className="flex items-center gap-2.5">
+                {isApprovedArtist ? (
+                  <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+                ) : isPendingArtist ? (
+                  <Clock className="w-5 h-5 text-amber-500" />
+                ) : (
+                  <FileCheck className="w-5 h-5 text-amber-500" />
+                )}
                 <h3 className="font-display font-bold text-lg">
                   {isApprovedArtist
                     ? (language === 'en' ? 'Artist Application - Approved' : 'Ombi la Usajili - Imeidhinishwa')
@@ -5777,40 +5963,63 @@ export default function ArtistWorkbench({
             </div>
 
             {isPendingArtist && (
-              <div className="p-3.5 bg-red-500/15 border-2 border-red-500/50 rounded-2xl text-red-900 dark:text-red-200 text-xs font-semibold flex items-center gap-2.5">
-                <span className="text-2xl shrink-0">⏳</span>
-                <div>
-                  <p className="font-bold font-display text-red-900 dark:text-red-100">
-                    {language === 'en' ? 'Application Submitted & Pending Review' : 'Ombi Limewasilishwa & Linasubiri Ukaguzi'}
-                  </p>
-                  <p className="text-[11px] font-normal opacity-90 mt-0.5">
-                    {language === 'en'
-                      ? 'Your application has been submitted and is under review by administrators. Application details are locked while pending.'
-                      : 'Ombi lako limewasilishwa na linakaguliwa na msimamizi. Huwezi kubadilisha maelezo kwa sasa.'}
-                  </p>
+              <div className="space-y-3">
+                <div className="p-3.5 bg-amber-500/15 border-2 border-amber-500/50 rounded-2xl text-amber-900 dark:text-amber-200 text-xs font-semibold flex items-center gap-2.5">
+                  <Clock className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <div>
+                    <p className="font-bold font-display text-amber-900 dark:text-amber-100">
+                      {language === 'en' ? 'Application Submitted & Pending Admin Review' : 'Ombi Limewasilishwa & Linasubiri Ukaguzi wa Admin'}
+                    </p>
+                    <p className="text-[11px] font-normal opacity-90 mt-0.5">
+                      {language === 'en'
+                        ? 'Your application with sample artwork has been sent to the administrator for review and approval.'
+                        : 'Ombi lako na sampuli ya kazi limetumwa kwa msimamizi kwa ajili ya ukaguzi na idhini.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {isRejectedArtist && (
+              <div className="space-y-3">
+                <div className="p-3.5 bg-rose-500/15 border-2 border-rose-500/50 rounded-2xl text-rose-900 dark:text-rose-200 text-xs font-semibold flex items-center gap-2.5">
+                  <XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" />
+                  <div>
+                    <p className="font-bold font-display text-rose-900 dark:text-rose-100">
+                      {language === 'en' ? 'Previous Application Declined' : 'Ombi Lililopita Limekataliwa'}
+                    </p>
+                    <p className="text-[11px] font-normal opacity-90 mt-0.5">
+                      {language === 'en'
+                        ? 'The administrator reviewed your application and requested revisions. Please update your artwork sample and re-submit your application below.'
+                        : 'Msimamizi amekagua ombi lako na kuomba mabadiliko. Tafadhali sasisha sampuli ya kazi yako na utume ombi upya hapa chini.'}
+                    </p>
+                  </div>
                 </div>
               </div>
             )}
 
             {isApprovedArtist && (
-              <div className="p-3.5 bg-emerald-500/15 border-2 border-emerald-500/50 rounded-2xl text-emerald-900 dark:text-emerald-200 text-xs font-semibold flex items-center gap-2.5">
-                <span className="text-2xl shrink-0">✅</span>
-                <div>
-                  <p className="font-bold font-display text-emerald-900 dark:text-emerald-100">
-                    {language === 'en' ? 'Artist Account Verified & Approved!' : 'Akaunti ya Msanii Imeidhinishwa!'}
-                  </p>
-                  <p className="text-[11px] font-normal opacity-90 mt-0.5">
-                    {language === 'en'
-                      ? 'Congratulations! Your artist profile and artwork sample have been verified and approved by administrators.'
-                      : 'Hongera! Akaunti yako ya msanii na sampuli za kazi zimeidhinishwa na msimamizi.'}
-                  </p>
+              <div className="space-y-3">
+                <div className="p-3.5 bg-emerald-500/15 border-2 border-emerald-500/50 rounded-2xl text-emerald-900 dark:text-emerald-200 text-xs font-semibold flex items-center gap-2.5">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <div>
+                    <p className="font-bold font-display text-emerald-900 dark:text-emerald-100">
+                      {language === 'en' ? 'Artist Account Verified & Approved!' : 'Akaunti ya Msanii Imeidhinishwa!'}
+                    </p>
+                    <p className="text-[11px] font-normal opacity-90 mt-0.5">
+                      {language === 'en'
+                        ? 'Congratulations! Your artist profile and artwork sample have been verified and approved by administrators.'
+                        : 'Hongera! Akaunti yako ya msanii na sampuli za kazi zimeidhinishwa na msimamizi.'}
+                    </p>
+                  </div>
                 </div>
               </div>
             )}
 
             {appSuccessMsg ? (
-              <div className="p-4 bg-emerald-500/20 border-2 border-emerald-500 rounded-2xl text-emerald-800 dark:text-emerald-200 text-xs font-semibold text-center animate-fade-in">
-                🎉 {appSuccessMsg}
+              <div className="p-4 bg-emerald-500/20 border-2 border-emerald-500 rounded-2xl text-emerald-800 dark:text-emerald-200 text-xs font-semibold text-center flex items-center justify-center gap-2 animate-fade-in">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{appSuccessMsg}</span>
               </div>
             ) : (
               <form onSubmit={handleSubmitApplication} className="space-y-4 text-left">
@@ -5906,7 +6115,7 @@ export default function ArtistWorkbench({
                             isNight ? 'border-slate-700 bg-slate-900/50' : 'border-amber-300 bg-amber-50/30'
                           }`}
                         >
-                          <span className="text-3xl">🎨</span>
+                          <UploadCloud className="w-8 h-8 text-amber-500" />
                           <div>
                             <p className="text-xs font-bold text-amber-900 dark:text-amber-100">
                               {language === 'en' ? 'Click or drag artwork image or video here' : 'Bofya au buruta picha au video hapa'}
@@ -5917,9 +6126,10 @@ export default function ArtistWorkbench({
                           </div>
                           <button
                             type="button"
-                            className="mt-1 px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 text-[11px] font-bold rounded-xl shadow-xs"
+                            className="mt-1 px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 text-[11px] font-bold rounded-xl shadow-xs flex items-center gap-1.5"
                           >
-                            📁 {language === 'en' ? 'Upload Image / Video' : 'Pakia Picha / Video'}
+                            <UploadCloud className="w-3.5 h-3.5" />
+                            <span>{language === 'en' ? 'Upload Image / Video' : 'Pakia Picha / Video'}</span>
                           </button>
                         </div>
 
@@ -5981,8 +6191,9 @@ export default function ArtistWorkbench({
 
                           {/* File Name Info Badge */}
                           <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2 pointer-events-none z-10">
-                            <span className="bg-black/80 backdrop-blur-xs text-white text-[10px] px-2.5 py-1 rounded-lg font-mono truncate max-w-[65%] shadow-xs">
-                              {isVideoMedia(appSampleImage, appSampleFileName) ? '🎬' : '📄'} {appSampleFileName || 'Artwork_Sample'}
+                            <span className="bg-black/80 backdrop-blur-xs text-white text-[10px] px-2.5 py-1 rounded-lg font-mono truncate max-w-[65%] shadow-xs flex items-center gap-1">
+                              <FileCheck className="w-3 h-3 text-amber-400" />
+                              <span>{appSampleFileName || 'Artwork_Sample'}</span>
                             </span>
                             <span className="bg-amber-500 text-slate-950 text-[10px] px-2 py-0.5 rounded-md font-bold shadow-xs">
                               Attached
@@ -5996,7 +6207,7 @@ export default function ArtistWorkbench({
                             className="absolute top-2 right-2 bg-red-600 hover:bg-red-700 active:scale-95 text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-lg border border-red-700 transition flex items-center gap-1.5 cursor-pointer z-20"
                             title="Remove Media"
                           >
-                            <span>🗑️</span>
+                            <Trash2 className="w-3.5 h-3.5" />
                             <span>{language === 'en' ? 'Remove' : 'Odoa'}</span>
                           </button>
                         </div>
@@ -6021,7 +6232,7 @@ export default function ArtistWorkbench({
                           />
                         )}
                         <span className="absolute bottom-2 right-2 bg-black/80 text-white text-[10px] px-2.5 py-1 rounded-lg font-bold shadow-xs z-10">
-                          {isVideoMedia(appSampleImage, appSampleFileName) ? '🎬 Submitted Video' : '🎨 Submitted Artwork'}
+                          {isVideoMedia(appSampleImage, appSampleFileName) ? 'Submitted Video' : 'Submitted Artwork'}
                         </span>
                       </div>
                     ) : (
@@ -6045,8 +6256,14 @@ export default function ArtistWorkbench({
                       disabled={appSubmitting}
                       className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-slate-950 font-display font-bold text-xs shadow border-b-2 border-amber-700 active:translate-y-0.5 cursor-pointer flex items-center gap-1.5"
                     >
-                      <span>🚀</span>
-                      <span>{appSubmitting ? (language === 'en' ? 'Submitting...' : 'Inatuma...') : (language === 'en' ? 'Submit Application' : 'Tuma Ombi')}</span>
+                      <FileCheck className="w-3.5 h-3.5" />
+                      <span>
+                        {appSubmitting
+                          ? (language === 'en' ? 'Submitting...' : 'Inatuma...')
+                          : isRejectedArtist
+                          ? (language === 'en' ? 'Re-submit Application' : 'Tuma Ombi Tena')
+                          : (language === 'en' ? 'Submit Application' : 'Tuma Ombi')}
+                      </span>
                     </button>
                   )}
                 </div>

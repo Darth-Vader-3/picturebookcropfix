@@ -39,7 +39,8 @@ import {
   X,
   Award,
   Lock,
-  ShieldCheck
+  ShieldCheck,
+  Clock
 } from 'lucide-react';
 
 import EducationTips from './components/EducationTips';
@@ -64,6 +65,7 @@ import {
   deleteBookFromFirestore,
   subscribeToBooks,
   verifyAndActivateArtistInFirestore,
+  handleIncomingEmailVerification,
   signOutFromFirebaseAndClearSession,
   purgeAllApplicationDataFromCloudAndLocal,
   auth,
@@ -170,6 +172,10 @@ export default function App() {
   const { theme, isNight, setTheme, toggleTheme, syncTheme } = useThemeSync(userAccount, appMode);
 
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [authModalInitialStep, setAuthModalInitialStep] = useState<'role_select' | 'artist_auth' | 'student_setup'>('role_select');
+  const [authModalInitialTab, setAuthModalInitialTab] = useState<'login' | 'signup' | 'forgot_password' | 'email_verification'>('login');
+  const [authModalInitialEmail, setAuthModalInitialEmail] = useState<string>('');
+  const [authModalSuccessNotice, setAuthModalSuccessNotice] = useState<string>('');
   const [showLegalModal, setShowLegalModal] = useState<boolean>(false);
   const [legalModalTab, setLegalModalTab] = useState<'terms' | 'rights'>('terms');
 
@@ -287,11 +293,15 @@ export default function App() {
           const { userDoc, artistDoc } = await getUserAndArtistDoc(currentUser.email, currentUser.uid);
           const found = artistDoc || userDoc;
           if (found) {
+            const isApproved = found.status === 'approved' || found.artistStatus === 'approved' || found.adminVerified === true || found.role === 'admin';
             setUserAccount(prev => ({
               ...prev,
               role: found.role || (found.isArtist ? 'artist' : 'student'),
-              status: found.status || 'approved',
-              artistStatus: found.artistStatus || found.status || 'approved',
+              status: found.status || (isApproved ? 'approved' : 'unapplied'),
+              artistStatus: found.artistStatus || found.status || (isApproved ? 'approved' : 'unapplied'),
+              adminVerified: isApproved,
+              verifiedAt: found.verifiedAt || (isApproved ? (found.createdAt || new Date().toISOString()) : ''),
+              artistApplicationSubmitted: found.artistApplicationSubmitted ?? (Boolean(found.sampleImageUrl) || isApproved),
               name: found.name || currentUser.displayName || prev.name,
               email: currentUser.email || prev.email,
               username: found.username || prev.username,
@@ -307,10 +317,30 @@ export default function App() {
       }
     });
 
+    const handleArtistStatusUpdated = (e: any) => {
+      const detail = e.detail;
+      if (detail && detail.email) {
+        setUserAccount(prev => {
+          if (prev.email && prev.email.toLowerCase() === detail.email.toLowerCase()) {
+            return {
+              ...prev,
+              status: detail.status,
+              artistStatus: detail.status,
+              adminVerified: detail.adminVerified,
+              ...(detail.adminVerified ? { verifiedAt: new Date().toISOString() } : {})
+            };
+          }
+          return prev;
+        });
+      }
+    };
+    window.addEventListener('digipicture_artist_status_updated', handleArtistStatusUpdated);
+
     return () => {
       if (typeof unsubscribe === 'function') {
         unsubscribe();
       }
+      window.removeEventListener('digipicture_artist_status_updated', handleArtistStatusUpdated);
     };
   }, []);
 
@@ -351,12 +381,15 @@ export default function App() {
     const processEmailVerification = async () => {
       try {
         const urlParams = new URLSearchParams(window.location.search);
-        const emailToVerify = urlParams.get('verify_email') || urlParams.get('email');
-        if (emailToVerify) {
-          const cleanEmail = emailToVerify.trim().toLowerCase();
-          
-          // Activate in Firebase Firestore database
-          await verifyAndActivateArtistInFirestore(cleanEmail);
+        let searchParams = urlParams;
+        if (!urlParams.get('verify_email') && !urlParams.get('email') && !urlParams.get('oobCode') && window.location.hash.includes('?')) {
+          searchParams = new URLSearchParams(window.location.hash.substring(window.location.hash.indexOf('?')));
+        }
+
+        const verifiedEmail = await handleIncomingEmailVerification(searchParams);
+
+        if (verifiedEmail) {
+          const cleanEmail = verifiedEmail.trim().toLowerCase();
 
           // 1. Check pending registrations first
           let pendingList = safeGetJSON<any[]>('digipicture_pending_registrations', []);
@@ -378,15 +411,23 @@ export default function App() {
             // Clean up pending list
             const updatedPending = pendingList.filter((a: any) => a && a.email?.toLowerCase() !== cleanEmail);
             safeSetItem('digipicture_pending_registrations', updatedPending);
-
-            setShowAuthModal(true);
-            playChime('sparkle');
           } else if (foundIndex !== -1) {
             registered[foundIndex].isEmailVerified = true;
             safeSetItem('digipicture_registered_artists', registered);
-            setShowAuthModal(true);
-            playChime('sparkle');
           }
+
+          // Redirect to login page with verified email autofilled
+          setAuthModalInitialStep('artist_auth');
+          setAuthModalInitialTab('login');
+          setAuthModalInitialEmail(cleanEmail);
+          setAuthModalSuccessNotice(
+            language === 'en'
+              ? `Email verified successfully for ${cleanEmail}! Please enter your password to log in.`
+              : `Barua pepe ${cleanEmail} imethibitishwa kwa mafanikio! Ingiza nenosiri lako ili kuingia.`
+          );
+          setShowAuthModal(true);
+          playChime('sparkle');
+
           window.history.replaceState({}, document.title, window.location.pathname);
         }
       } catch (e) {
@@ -394,7 +435,7 @@ export default function App() {
       }
     };
     processEmailVerification();
-  }, []);
+  }, [language]);
 
   // Support secret admin route access (/secret-admin-gate, #secret-admin-gate, ?route=secret-admin-gate)
   useEffect(() => {
@@ -1766,13 +1807,9 @@ export default function App() {
           }`}>
             <div className="w-full max-w-6xl mx-auto flex items-center justify-between gap-1.5 sm:gap-2 flex-nowrap overflow-x-hidden">
               
-              {/* Brand Logo and Title in Header */}
-              <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">
-                <div className="w-7 h-7 sm:w-11 sm:h-11 bg-white/10 rounded-full flex items-center justify-center border-2 border-white/20 shrink-0">
-                  <Compass className="w-4 h-4 sm:w-5 sm:h-5 animate-spin-slow text-white" />
-                </div>
-                
-                <h1 className="font-display font-medium text-xs sm:text-xl tracking-normal text-white drop-shadow-sm ml-0.5 select-none truncate min-w-0">
+              {/* Brand Title in Header */}
+              <div className="flex items-center min-w-0 flex-1">
+                <h1 className="font-display font-black text-sm sm:text-xl tracking-wide text-white drop-shadow-sm select-none truncate min-w-0">
                   {appMode === 'reading' && activeBook
                     ? activeBook.title.toUpperCase()
                     : TRANSLATIONS[language].appTitle.toUpperCase()}
@@ -1786,7 +1823,7 @@ export default function App() {
                 {(!userAccount.isLoggedIn || userAccount.role !== 'artist') && (
                   <button
                     onClick={() => { setShowAuthModal(true); playAppChime('pop'); }}
-                    className={`px-2 py-1 sm:px-3 sm:py-1.5 border-2 rounded-full shadow cursor-pointer active:scale-95 transition flex items-center gap-1 sm:gap-1.5 select-none font-display text-[11px] sm:text-xs font-black ${
+                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 border-2 rounded-full shadow cursor-pointer active:scale-95 transition flex items-center gap-1 sm:gap-1.5 select-none font-display text-[11px] sm:text-xs font-bold ${
                       theme === 'night'
                         ? 'bg-emerald-950 text-emerald-200 border-emerald-600 hover:bg-emerald-900'
                         : 'bg-emerald-400 text-[#064E3B] border-emerald-600 hover:bg-emerald-300'
@@ -1794,13 +1831,10 @@ export default function App() {
                     id="header-role-login-btn"
                     title="Account Portal & Sign In"
                   >
-                    <span className="text-xs sm:text-sm">
-                      {userAccount.role === 'artist' ? '🎨' : '🎓'}
-                    </span>
-                    <span className="hidden sm:inline">
+                    <span>
                       {language === 'en' ? 'Sign In / Account' : 'Ingia / Akaunti'}
                     </span>
-                    <span className={`text-[9px] sm:text-[10px] px-1 sm:px-1.5 py-0.5 rounded-full font-extrabold uppercase ${
+                    <span className={`text-[9px] sm:text-[10px] px-1.5 py-0.5 rounded-full font-extrabold uppercase ${
                       theme === 'night'
                         ? 'bg-slate-800 text-amber-200'
                         : 'bg-white/60 text-[#3B1A08]'
@@ -1817,7 +1851,7 @@ export default function App() {
                       setAppMode('workbench');
                       playAppChime('sparkle');
                     }}
-                    className={`px-2 py-1 sm:px-3 sm:py-1.5 border-2 rounded-full shadow cursor-pointer active:scale-95 transition flex items-center gap-1 sm:gap-1.5 select-none font-display text-[11px] sm:text-xs font-bold ${
+                    className={`px-2.5 py-1 sm:px-3 sm:py-1.5 border-2 rounded-full shadow cursor-pointer active:scale-95 transition flex items-center gap-1 sm:gap-1.5 select-none font-display text-[11px] sm:text-xs font-bold ${
                       theme === 'night'
                         ? 'bg-amber-950 text-amber-200 border-amber-600 hover:bg-amber-900'
                         : 'bg-gradient-to-r from-orange-500 to-amber-500 text-white border-amber-600 hover:brightness-105'
@@ -1825,7 +1859,6 @@ export default function App() {
                     id="header-open-creator-studio-btn"
                     title={language === 'en' ? 'Open Artist Creator Studio Dashboard' : 'Fungua Studio ya Msanii'}
                   >
-                    <span className="text-xs sm:text-sm">🎨</span>
                     <span className="hidden lg:inline">
                       {language === 'en' ? 'Open Artist Creator Studio' : 'Fungua Studio ya Msanii'}
                     </span>
@@ -1838,7 +1871,7 @@ export default function App() {
                 {/* Digital Reward Stamps & Badges Button */}
                 <button
                   onClick={() => { setShowBadgesPassportModal(true); playAppChime('sparkle'); }}
-                  className={`px-2 py-1 sm:px-3 sm:py-1.5 border-2 rounded-full shadow cursor-pointer active:scale-95 transition flex items-center gap-1 select-none text-[11px] sm:text-xs font-display font-black ${
+                  className={`px-2.5 py-1 sm:px-3 sm:py-1.5 border-2 rounded-full shadow cursor-pointer active:scale-95 transition flex items-center gap-1.5 select-none text-[11px] sm:text-xs font-display font-bold ${
                     theme === 'night'
                       ? 'bg-slate-900 border-slate-700 text-amber-200 hover:bg-slate-800'
                       : 'bg-amber-200 border-amber-500 text-[#3B1A08] hover:bg-amber-300'
@@ -1846,12 +1879,10 @@ export default function App() {
                   id="header-badges-passport-btn"
                   title="My Digital Stamps & Badges Passport"
                 >
-                  <span className="text-xs sm:text-sm">🎖️</span>
-                  <span className={`hidden md:inline font-black ${theme === 'night' ? 'text-amber-200' : 'text-[#3B1A08]'}`}>{language === 'en' ? 'Stamps' : 'Mahuri'}</span>
+                  <span className={`font-bold ${theme === 'night' ? 'text-amber-200' : 'text-[#3B1A08]'}`}>{language === 'en' ? 'Stamps' : 'Mahuri'}</span>
                   {(Object.keys(userStamps).length + Object.keys(userBadges).length) > 0 && (
                     <span className="relative flex items-center justify-center ml-0.5">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                      <span className="relative bg-amber-700 text-white text-[9px] font-extrabold px-1.5 py-0.2 rounded-full animate-pulse shadow-xs">
+                      <span className="bg-amber-700 text-white text-[9px] font-extrabold px-1.5 py-0.2 rounded-full shadow-xs">
                         {Object.keys(userStamps).length + Object.keys(userBadges).length}
                       </span>
                     </span>
@@ -1860,7 +1891,7 @@ export default function App() {
 
                 <button
                   onClick={() => { setShowSettings(true); setActiveSettingsTab('profile'); playAppChime('pop'); }}
-                  className={`p-1 sm:pl-2 sm:pr-3 sm:py-1 border-2 rounded-full shadow cursor-pointer active:scale-95 transition flex items-center gap-1 sm:gap-1.5 select-none ${
+                  className={`p-1 sm:pl-2.5 sm:pr-3 sm:py-1 border-2 rounded-full shadow cursor-pointer active:scale-95 transition flex items-center gap-1.5 select-none ${
                     theme === 'night'
                       ? 'bg-slate-900 border-slate-700 text-amber-100 hover:bg-slate-800'
                       : 'bg-white border-brand-orange-dark text-[#3B1A08] hover:bg-orange-50'
@@ -1868,13 +1899,12 @@ export default function App() {
                   id="profile-settings-trigger-button"
                   title="My Profile & Settings"
                 >
-                  <span className={`text-sm sm:text-lg leading-none p-1 sm:p-1.5 rounded-full ${theme === 'night' ? 'bg-slate-800 text-slate-100' : 'bg-orange-100'}`}>
+                  <span className={`text-sm sm:text-base leading-none p-1 rounded-full ${theme === 'night' ? 'bg-slate-800 text-slate-100' : 'bg-orange-100'}`}>
                     {userProfile.avatar}
                   </span>
-                  <span className={`text-xs font-display font-black hidden sm:inline ${theme === 'night' ? 'text-amber-100' : 'text-[#3B1A08]'}`}>
+                  <span className={`text-xs font-display font-bold hidden sm:inline ${theme === 'night' ? 'text-amber-100' : 'text-[#3B1A08]'}`}>
                     {userProfile.name.split(' ')[0]}
                   </span>
-                  <Settings className={`w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5px] animate-spin-slow ${theme === 'night' ? 'text-amber-300' : 'text-brand-orange'}`} />
                 </button>
               </div>
 
@@ -1883,10 +1913,16 @@ export default function App() {
 
           <AuthModal
             isOpen={showAuthModal}
-            onClose={() => setShowAuthModal(false)}
+            onClose={() => {
+              setShowAuthModal(false);
+              setAuthModalInitialEmail('');
+              setAuthModalSuccessNotice('');
+            }}
             onAuthenticate={(account) => {
               setUserAccount(account);
               setShowAuthModal(false);
+              setAuthModalInitialEmail('');
+              setAuthModalSuccessNotice('');
               playAppChime('sparkle');
               if (account.role === 'admin' && account.isLoggedIn) {
                 setAppMode('admin');
@@ -1900,6 +1936,10 @@ export default function App() {
             language={language}
             theme={theme}
             onLogout={handleCompleteLogout}
+            initialStep={authModalInitialStep}
+            initialAuthTab={authModalInitialTab}
+            initialLoginEmail={authModalInitialEmail}
+            initialSuccessNotice={authModalSuccessNotice}
           />
 
           {/* ==================== SETTINGS & USER PROFILE OVERLAY PANEL ==================== */}
@@ -1932,20 +1972,20 @@ export default function App() {
                 {(() => {
                   const isArtistUser = userAccount?.role === 'artist' || (userProfile as any)?.role === 'artist';
                   const desktopNavTabs = [
-                    { id: 'profile' as const, icon: '👤', title: language === 'en' ? 'Profile' : 'Wasifu', count: null },
-                    { id: 'settings' as const, icon: '⚙️', title: language === 'en' ? 'Settings' : 'Mipangilio', count: null },
-                    { id: 'bookmarks' as const, icon: '🔖', title: 'History', count: history.length },
+                    { id: 'profile' as const, title: language === 'en' ? 'Profile' : 'Wasifu', count: null },
+                    { id: 'settings' as const, title: language === 'en' ? 'Settings' : 'Mipangilio', count: null },
+                    { id: 'bookmarks' as const, title: 'History', count: history.length },
                     ...(isArtistUser
-                      ? [{ id: 'messages' as const, icon: '💬', title: 'Direct Msgs', count: directMessages.length }]
+                      ? [{ id: 'messages' as const, title: 'Direct Msgs', count: directMessages.length }]
                       : []),
-                    { id: 'reports' as const, icon: '📧', title: 'Contact & Reports', count: reportsList.length }
+                    { id: 'reports' as const, title: 'Contact & Reports', count: reportsList.length }
                   ];
                   return (
                     <div className={`hidden sm:flex border-b p-2 gap-1 select-none transition-colors duration-300 ${
                       theme === 'night' ? 'bg-slate-950/80 border-slate-800' : 'bg-amber-50/50 border-orange-100'
                     }`}>
                       {desktopNavTabs.map((tab) => {
-                        const label = `${tab.icon} ${tab.title}${tab.count !== null ? ` (${tab.count})` : ''}`;
+                        const label = `${tab.title}${tab.count !== null ? ` (${tab.count})` : ''}`;
                         const isActive = activeSettingsTab === tab.id;
                         return (
                           <button
@@ -1959,7 +1999,7 @@ export default function App() {
                             className={`flex-1 py-2 px-1 text-center font-display font-bold text-[11px] rounded-xl cursor-pointer transition ${
                               isActive
                                 ? 'bg-amber-500 text-white shadow-sm'
-                                : (theme === 'night' ? 'text-slate-300 hover:bg-slate-800' : 'text-amber-950 hover:bg-orange-100/40')
+                                : (theme === 'night' ? 'text-slate-300 hover:bg-slate-800' : 'text-amber-955 hover:bg-orange-100/40')
                             }`}
                           >
                             {label}
@@ -1977,13 +2017,13 @@ export default function App() {
                   {(() => {
                     const isArtistUser = userAccount?.role === 'artist' || (userProfile as any)?.role === 'artist';
                     const settingsNavTabs = [
-                      { id: 'profile' as const, icon: '👤', title: language === 'en' ? 'Profile' : 'Wasifu', count: null },
-                      { id: 'settings' as const, icon: '⚙️', title: language === 'en' ? 'Settings' : 'Mipangilio', count: null },
-                      { id: 'bookmarks' as const, icon: '🔖', title: 'History', count: history.length },
+                      { id: 'profile' as const, title: language === 'en' ? 'Profile' : 'Wasifu', count: null },
+                      { id: 'settings' as const, title: language === 'en' ? 'Settings' : 'Mipangilio', count: null },
+                      { id: 'bookmarks' as const, title: 'History', count: history.length },
                       ...(isArtistUser
-                        ? [{ id: 'messages' as const, icon: '💬', title: 'Direct Msgs', count: directMessages.length }]
+                        ? [{ id: 'messages' as const, title: 'Direct Msgs', count: directMessages.length }]
                         : []),
-                      { id: 'reports' as const, icon: '📧', title: 'Contact & Reports', count: reportsList.length }
+                      { id: 'reports' as const, title: 'Contact & Reports', count: reportsList.length }
                     ];
                     const currentTab = settingsNavTabs.find(t => t.id === activeSettingsTab) || settingsNavTabs[0];
                     return (
@@ -2003,7 +2043,6 @@ export default function App() {
                           aria-expanded={isMobileSettingsNavOpen}
                         >
                           <div className="flex items-center gap-2 min-w-0">
-                            <span className="text-base shrink-0">{currentTab.icon}</span>
                             <span className="truncate">{currentTab.title}</span>
                             {currentTab.count !== null && (
                               <span className={`px-2 py-0.5 text-[11px] rounded-full font-semibold shrink-0 ${
@@ -2043,7 +2082,6 @@ export default function App() {
                                   }`}
                                 >
                                   <div className="flex items-center gap-2.5 min-w-0">
-                                    <span className="text-base shrink-0">{tab.icon}</span>
                                     <span className="truncate">{tab.title}</span>
                                     {tab.count !== null && (
                                       <span className={`px-1.5 py-0.5 text-[10px] rounded-full font-semibold shrink-0 ${
@@ -2389,7 +2427,7 @@ export default function App() {
                           theme === 'night' ? 'bg-slate-950 border-slate-800' : 'bg-orange-50/30 border-orange-100'
                         }`}>
                           <label className={`block text-[11px] font-display font-bold uppercase mb-1 ${theme === 'night' ? 'text-slate-300' : 'text-orange-850'}`}>
-                            🛠️ {TRANSLATIONS[language].creativeWorkshopSetup}
+                            {TRANSLATIONS[language].creativeWorkshopSetup}
                           </label>
                           <p className={`text-[10px] mb-3 leading-relaxed ${theme === 'night' ? 'text-slate-400' : 'text-orange-900'}`}>
                             {TRANSLATIONS[language].creativeWorkshopDesc}
@@ -2402,7 +2440,7 @@ export default function App() {
                             }}
                             className="w-full py-2.5 bg-gradient-to-r from-orange-500 to-amber-500 text-white font-display font-bold text-xs rounded-xl shadow border-b-2 border-amber-700 active:translate-y-0.5 active:border-b-0 hover:brightness-105 transition cursor-pointer flex items-center justify-center gap-1.5"
                           >
-                            🎨 {TRANSLATIONS[language].openArtistWorkbench}
+                            {TRANSLATIONS[language].openArtistWorkbench}
                           </button>
                         </div>
                       )}
@@ -2426,7 +2464,7 @@ export default function App() {
                             <span className={`text-xs font-display font-bold block ${
                               theme === 'night' ? 'text-slate-200' : 'text-gray-800'
                             }`}>
-                              ✨ {language === 'en' ? 'New Book Releases' : 'Vitabu Vipya Vilivyochapishwa'}
+                              {language === 'en' ? 'New Book Releases' : 'Vitabu Vipya Vilivyochapishwa'}
                             </span>
                             <span className={`text-[10px] ${
                               theme === 'night' ? 'text-slate-400' : 'text-gray-600'
@@ -2464,7 +2502,7 @@ export default function App() {
                             <span className={`text-xs font-display font-bold block ${
                               theme === 'night' ? 'text-slate-200' : 'text-gray-800'
                             }`}>
-                              🎨 {language === 'en' ? 'Artist Application Updates' : 'Taarifa za Maombi ya Wasanii'}
+                              {language === 'en' ? 'Artist Application Updates' : 'Taarifa za Maombi ya Wasanii'}
                             </span>
                             <span className={`text-[10px] ${
                               theme === 'night' ? 'text-slate-400' : 'text-gray-600'
@@ -2918,11 +2956,10 @@ export default function App() {
 
                   <button
                     onClick={handleSurpriseMe}
-                    className="px-3.5 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-display font-bold text-xs rounded-full shadow-md transition transform active:scale-95 flex items-center gap-1.5 cursor-pointer ml-1"
+                    className="px-3.5 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-display font-bold text-xs rounded-full shadow-md transition transform active:scale-95 cursor-pointer ml-1"
                     id="surprise-me-button"
                     title="Pick a random story book for me!"
                   >
-                    <Shuffle className="w-3.5 h-3.5" />
                     <span>{language === 'en' ? 'Surprise Me!' : 'Nipatie Hadithi!'}</span>
                   </button>
                 </div>
@@ -2935,20 +2972,11 @@ export default function App() {
                 {/* Dashboard Shelf Sorting & Count Header */}
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-2 mb-3.5 pb-3 border-b border-orange-200/80 select-none w-full max-w-full box-border">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-display font-bold text-amber-955 flex items-center gap-1.5">
-                      <span>📚</span>
-                      <span>
-                        {language === 'en'
-                          ? `Showing ${filteredBooks.length} Picture Books`
-                          : `Inaonyesha Vitabu ${filteredBooks.length}`}
-                      </span>
+                    <span className="text-xs font-display font-bold text-amber-955">
+                      {language === 'en'
+                        ? `Showing ${filteredBooks.length} Picture Books`
+                        : `Inaonyesha Vitabu ${filteredBooks.length}`}
                     </span>
-                    {shelfSortBy === 'recent' && (
-                      <span className="bg-gradient-to-r from-orange-100 to-amber-100 text-orange-950 text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-orange-300 shadow-2xs flex items-center gap-1 animate-fadeIn">
-                        <span>⚡</span>
-                        <span>{language === 'en' ? 'Sorted by: Recently Added / Updated' : 'Imepangwa: Vilivyoongezwa Karibuni'}</span>
-                      </span>
-                    )}
                   </div>
 
                   <div className="flex items-center gap-1.5 text-xs font-display flex-nowrap shrink-0 max-w-full overflow-x-auto pb-0.5">
@@ -2959,40 +2987,37 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => { setShelfSortBy('recent'); setShelfPage(1); playChime('pop'); }}
-                        className={`px-2 sm:px-2.5 py-1 rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0 ${
+                        className={`px-2.5 sm:px-3 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer whitespace-nowrap shrink-0 ${
                           shelfSortBy === 'recent'
                             ? 'bg-amber-600 text-white shadow-2xs'
                             : 'text-amber-900 hover:bg-amber-100/70'
                         }`}
                         title="Sort by most recently added or updated"
                       >
-                        <span>🕒</span>
                         <span>{language === 'en' ? 'Recently Updated' : 'Iliyosasishwa'}</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => { setShelfSortBy('title'); setShelfPage(1); playChime('pop'); }}
-                        className={`px-2 sm:px-2.5 py-1 rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0 ${
+                        className={`px-2.5 sm:px-3 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer whitespace-nowrap shrink-0 ${
                           shelfSortBy === 'title'
                             ? 'bg-amber-600 text-white shadow-2xs'
                             : 'text-amber-900 hover:bg-amber-100/70'
                         }`}
                         title="Sort alphabetically by title"
                       >
-                        <span>🔤</span>
                         <span>{language === 'en' ? 'Title A-Z' : 'Jina A-Z'}</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => { setShelfSortBy('rating'); setShelfPage(1); playChime('pop'); }}
-                        className={`px-2 sm:px-2.5 py-1 rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0 ${
+                        className={`px-2.5 sm:px-3 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer whitespace-nowrap shrink-0 ${
                           shelfSortBy === 'rating'
                             ? 'bg-amber-600 text-white shadow-2xs'
                             : 'text-amber-900 hover:bg-amber-100/70'
                         }`}
                         title="Sort by highest review rating"
                       >
-                        <span>⭐</span>
                         <span>{language === 'en' ? 'Highest Rated' : 'Nyota za Juu'}</span>
                       </button>
                     </div>
@@ -3001,7 +3026,7 @@ export default function App() {
 
                 {filteredBooks.length === 0 ? (
                   <div className="flex flex-col items-center justify-center text-center p-8 sm:p-12 select-none w-full max-w-full">
-                    <span className="text-5xl mb-3 animate-pulse">📚</span>
+                    <BookOpen className="w-12 h-12 text-amber-500 mb-3" />
                     <h3 className="font-display font-medium text-amber-955 text-base">{TRANSLATIONS[language].noBooksFound}</h3>
                     <p className="text-xs text-amber-900 mt-1 max-w-xs">
                       {language === 'en'
@@ -3027,7 +3052,7 @@ export default function App() {
                         >
                           {/* Cover Image inside card with Badges */}
                           <div className={`aspect-square w-full overflow-hidden border-b-3 sm:border-b-4 border-dashed transition-colors duration-300 relative flex items-center justify-center p-1 ${
-                            theme === 'night' ? 'bg-slate-950 border-slate-805' : 'bg-amber-50/50 border-dashed-orange-200'
+                            theme === 'night' ? 'bg-slate-955 border-slate-805' : 'bg-amber-50/50 border-dashed-orange-200'
                           }`}>
                             <img
                               src={book.coverImage}
@@ -3035,33 +3060,6 @@ export default function App() {
                               className="w-full h-full object-contain group-hover:scale-104 transition-transform duration-300"
                               referrerPolicy="no-referrer"
                             />
-                            
-                            {/* Recently Updated / Created Timestamp Badge */}
-                            {(book.updatedAt || book.createdAt) && (
-                              <div className="absolute top-1.5 left-1.5 sm:top-2.5 sm:left-2.5 bg-black/75 backdrop-blur-xs text-amber-200 font-display font-bold text-[8px] sm:text-[9px] px-1.5 py-0.5 rounded-full border border-amber-400/40 shadow-sm flex items-center gap-1 select-none z-10" title={`Updated: ${book.updatedAt || book.createdAt}`}>
-                                <span>🕒</span>
-                                <span className="truncate max-w-[65px] sm:max-w-none">{getRelativeTimeString(book.updatedAt || book.createdAt, language)}</span>
-                              </div>
-                            )}
-
-                            {/* Estimated Reading Time Badge */}
-                            <div className="absolute top-1.5 right-1.5 sm:top-2.5 sm:right-2.5 bg-black/70 backdrop-blur-xs text-amber-300 font-display font-bold text-[8px] sm:text-[10px] px-1.5 sm:px-2.5 py-0.5 sm:py-1 rounded-full border border-white/20 shadow-sm flex items-center gap-1 select-none">
-                              <span>⏱️</span>
-                              <span>{readingTime}m</span>
-                            </div>
-
-                            {/* Reviews & Ratings Badge */}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleOpenReviewsModal(book);
-                              }}
-                              className="absolute bottom-1.5 left-1.5 sm:bottom-2.5 sm:left-2.5 bg-amber-500 hover:bg-amber-600 text-white font-display font-bold text-[8px] sm:text-[10px] px-1.5 sm:px-2.5 py-0.5 sm:py-1 rounded-full border border-amber-600 shadow-sm flex items-center gap-1 select-none transition cursor-pointer"
-                              title="View ratings and reviews"
-                            >
-                              <Star className="w-2.5 h-2.5 sm:w-3 sm:h-3 fill-current text-yellow-200" />
-                              <span>{ratingInfo.average} ({ratingInfo.count})</span>
-                            </button>
                           </div>
 
                           {/* Card metadata label footer inside */}
@@ -3074,19 +3072,41 @@ export default function App() {
                               }`}>
                                 {book.title.toUpperCase()}
                               </h3>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleOpenArtistProfileModal(book.author);
-                                }}
-                                className={`text-[10px] font-sans mt-0.5 font-bold truncate hover:underline cursor-pointer flex items-center gap-1 ${
-                                  theme === 'night' ? 'text-amber-400 hover:text-amber-300' : 'text-amber-800 hover:text-orange-600'
-                                }`}
-                                title="Click to view artist bio & contact info"
-                              >
-                                <span>👤</span> {TRANSLATIONS[language].byAuthor.replace('{author}', book.author)}
-                              </button>
+                              <div className="flex items-center justify-between gap-1 mt-0.5">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenArtistProfileModal(book.author);
+                                  }}
+                                  className={`text-[10px] font-sans font-bold truncate hover:underline cursor-pointer ${
+                                    theme === 'night' ? 'text-amber-400 hover:text-amber-300' : 'text-amber-800 hover:text-orange-600'
+                                  }`}
+                                  title="Click to view artist bio & contact info"
+                                >
+                                  {TRANSLATIONS[language].byAuthor.replace('{author}', book.author)}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenReviewsModal(book);
+                                  }}
+                                  className="text-[10px] font-bold text-amber-600 hover:underline cursor-pointer shrink-0"
+                                  title="View ratings and reviews"
+                                >
+                                  ★ {ratingInfo.average} ({ratingInfo.count})
+                                </button>
+                              </div>
+                              <div className="text-[9px] text-gray-400 mt-1 flex items-center justify-center gap-1.5">
+                                <span>{readingTime}m read</span>
+                                {(book.updatedAt || book.createdAt) && (
+                                  <>
+                                    <span>•</span>
+                                    <span>{getRelativeTimeString(book.updatedAt || book.createdAt, language)}</span>
+                                  </>
+                                )}
+                              </div>
                             </div>
 
                             {/* Interactive tags labels */}
@@ -3120,7 +3140,6 @@ export default function App() {
                                   className="w-full py-1.5 px-3 bg-amber-500 hover:bg-amber-600 text-white font-display font-bold text-[10px] rounded-xl flex items-center justify-center gap-1.5 border-b-2 border-amber-700 active:translate-y-0.5 active:border-b-0 cursor-pointer shadow-xs transition duration-150"
                                   title={language === 'en' ? "Resume reading where you stopped" : "Endelea kusoma ulipoachia"}
                                 >
-                                  <Bookmark className="w-3.5 h-3.5 fill-current text-white" />
                                   {language === 'en' 
                                     ? `Resume Page ${(bookmarks[book.id] !== undefined ? bookmarks[book.id] : savedProgress) + 1}` 
                                     : `Endelea Ukurasa ${(bookmarks[book.id] !== undefined ? bookmarks[book.id] : savedProgress) + 1}`}
@@ -3136,10 +3155,9 @@ export default function App() {
                                     e.stopPropagation();
                                     handleOpenDirectMessageModal(book.author, book.title);
                                   }}
-                                  className="flex-1 py-1 px-2 rounded-lg bg-orange-50 hover:bg-orange-100 text-amber-900 border border-orange-200 font-bold flex items-center justify-center gap-1 cursor-pointer transition"
+                                  className="flex-1 py-1 px-2 rounded-lg bg-orange-50 hover:bg-orange-100 text-amber-900 border border-orange-200 font-bold flex items-center justify-center cursor-pointer transition"
                                   title="Send direct message to artist"
                                 >
-                                  <MessageSquare className="w-3 h-3 text-orange-500" />
                                   <span>Message</span>
                                 </button>
                               )}
@@ -3149,10 +3167,9 @@ export default function App() {
                                   e.stopPropagation();
                                   handleOpenShareModal('book', book);
                                 }}
-                                className="flex-1 py-1 px-2 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 font-bold flex items-center justify-center gap-1 cursor-pointer transition"
+                                className="flex-1 py-1 px-2 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 font-bold flex items-center justify-center cursor-pointer transition"
                                 title="Share book to social media"
                               >
-                                <Share2 className="w-3 h-3 text-indigo-500" />
                                 <span>Share</span>
                               </button>
                             </div>
@@ -3245,7 +3262,7 @@ export default function App() {
                     ? 'bg-slate-800 border-slate-700 text-amber-200'
                     : 'bg-amber-100 border-amber-200 text-amber-955'
                 }`}>
-                  🎨 {TRANSLATIONS[language].artMediumInsight}: <strong className="underline underline-offset-2 ml-0.5">
+                  {TRANSLATIONS[language].artMediumInsight}: <strong className="underline underline-offset-2 ml-0.5">
                     {activePage.artForm === 'painting' ? TRANSLATIONS[language].filterPainting.replace(/🎨\s*/, '')
                      : activePage.artForm === 'sculpture' ? TRANSLATIONS[language].filterSculpture.replace(/🏺\s*/, '')
                      : activePage.artForm === 'craft' ? TRANSLATIONS[language].filterCraft.replace(/✂️\s*/, '')
@@ -3271,13 +3288,6 @@ export default function App() {
                     {/* Top Row: Labels and Stats */}
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-display">
                       <div className="flex items-center gap-2">
-                        <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center border shadow-2xs ${
-                          theme === 'night'
-                            ? 'bg-slate-800 border-slate-700 text-amber-300'
-                            : (isFinished ? 'bg-amber-100 border-amber-300 text-amber-800' : 'bg-orange-100 border-orange-200 text-orange-700')
-                        }`}>
-                          {isFinished ? <Sparkles className="w-4 h-4 text-amber-400" /> : <BookOpen className="w-4 h-4 text-orange-500" />}
-                        </div>
                         <div>
                           <div className="flex items-center gap-1.5">
                             <span className={`font-bold text-xs sm:text-sm ${
@@ -3287,7 +3297,7 @@ export default function App() {
                             </span>
                             {isFinished && (
                               <span className="text-[10px] font-extrabold bg-amber-400 text-amber-950 px-2 py-0.5 rounded-full shadow-2xs border border-amber-500 animate-bounce">
-                                🎉 {language === 'en' ? 'Book Completed!' : 'Imekamilika!'}
+                                {language === 'en' ? 'Book Completed!' : 'Imekamilika!'}
                               </span>
                             )}
                           </div>
@@ -3381,18 +3391,12 @@ export default function App() {
                       ? 'bg-slate-900 border-slate-800 text-slate-100'
                       : 'bg-white border-orange-200 text-gray-900'
                   }`}>
-                    {/* Corner Ornaments */}
-                    <div className={`absolute top-3 left-3 text-xs ${theme === 'night' ? 'text-amber-400/30' : 'text-orange-300'}`}>✨</div>
-                    <div className={`absolute top-3 right-3 text-xs ${theme === 'night' ? 'text-amber-400/30' : 'text-orange-300'}`}>✨</div>
-                    <div className={`absolute bottom-3 left-3 text-xs ${theme === 'night' ? 'text-amber-400/30' : 'text-orange-300'}`}>✨</div>
-                    <div className={`absolute bottom-3 right-3 text-xs ${theme === 'night' ? 'text-amber-400/30' : 'text-orange-300'}`}>✨</div>
 
                     {/* Stage Title Banner */}
                     <div className={`flex items-center justify-between border-b pb-3 mb-4 flex-shrink-0 ${
                       theme === 'night' ? 'border-slate-800' : 'border-orange-100'
                     }`}>
                       <div className="flex items-center gap-2">
-                        <span className="text-xl">🖼️</span>
                         <h3 className={`font-display font-bold text-sm tracking-tight ${
                           theme === 'night' ? 'text-amber-200' : 'text-amber-955'
                         }`}>
@@ -3408,7 +3412,7 @@ export default function App() {
                          : activePage.artForm === 'sculpture' ? TRANSLATIONS[language].filterSculpture
                          : activePage.artForm === 'craft' ? TRANSLATIONS[language].filterCraft
                          : activePage.artForm === 'animation' ? TRANSLATIONS[language].filterAnimation
-                         : (language === 'en' ? "📷 Picture" : "📷 Picha")}
+                         : (language === 'en' ? "Picture" : "Picha")}
                       </span>
                     </div>
 
@@ -3489,7 +3493,7 @@ export default function App() {
                               {isStamped ? (
                                 <>
                                   <Check className="w-3.5 h-3.5 stroke-[3px]" />
-                                  <span>{language === 'en' ? 'Scene Stamped! ⭐' : 'Imepigwa Muhuri! ⭐'}</span>
+                                  <span>{language === 'en' ? 'Scene Stamped!' : 'Imepigwa Muhuri!'}</span>
                                 </>
                               ) : (
                                 <>
@@ -3506,7 +3510,7 @@ export default function App() {
                                 setShowBadgesPassportModal(true);
                                 playAppChime('pop');
                               }}
-                              className={`p-1.5 border rounded-xl transition cursor-pointer ${
+                              className={`p-1.5 border rounded-xl transition cursor-pointer flex items-center justify-center ${
                                 theme === 'night'
                                   ? 'bg-slate-800 hover:bg-slate-700 text-amber-200 border-slate-700'
                                   : 'bg-amber-100 hover:bg-amber-200 text-amber-900 border-amber-300'
@@ -3514,7 +3518,7 @@ export default function App() {
                               title={language === 'en' ? 'View My Private Badge Passport' : 'Tazama Pasipoti Yangu ya Beji'}
                               id="view-private-passport-mini-btn"
                             >
-                              <span className="text-xs">🎖️</span>
+                              <Award className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         </div>
@@ -3531,14 +3535,14 @@ export default function App() {
                         <span className={`text-[11px] font-display font-bold flex items-center gap-1 ${
                           theme === 'night' ? 'text-amber-200' : 'text-amber-955'
                         }`}>
-                          📸 {TRANSLATIONS[language].lensFilterLabel}
+                          {TRANSLATIONS[language].lensFilterLabel}
                         </span>
                         <div className="flex flex-wrap gap-1.5">
                           {[
-                            { id: 'normal', name: language === 'en' ? '☀️ Golden Daylight' : '☀️ Mwangaza wa Dhahabu' },
-                            { id: 'sunset', name: language === 'en' ? '🌅 Warm Sunset' : '🌅 Machweo ya Joto' },
-                            { id: 'cyan', name: language === 'en' ? '❄️ Cool Winter' : '❄️ Baridi ya Winter' },
-                            { id: 'mono', name: language === 'en' ? '📷 Charcoal Pencil' : '📷 Penseli ya Mkaa' }
+                            { id: 'normal', name: language === 'en' ? 'Golden Daylight' : 'Mwangaza wa Dhahabu' },
+                            { id: 'sunset', name: language === 'en' ? 'Warm Sunset' : 'Machweo ya Joto' },
+                            { id: 'cyan', name: language === 'en' ? 'Cool Winter' : 'Baridi ya Winter' },
+                            { id: 'mono', name: language === 'en' ? 'Charcoal Pencil' : 'Penseli ya Mkaa' }
                           ].map((f) => (
                             <button
                               key={f.id}
@@ -3572,13 +3576,13 @@ export default function App() {
                           }`}
                           title="Click to view artist profile, bio & contact information"
                         >
-                          <span>🎨 {language === 'en' ? "Educator / Artist: " : "Mwalimu / Msanii: "}</span>
+                          <span>{language === 'en' ? "Educator / Artist: " : "Mwalimu / Msanii: "}</span>
                           <span className={`font-extrabold ${theme === 'night' ? 'group-hover:text-amber-300' : 'group-hover:text-orange-600'}`}>{activeBook.author}</span>
                           <span className={`text-[10px] px-1.5 py-0.2 rounded-full border ${
                             theme === 'night'
                               ? 'bg-amber-950/60 text-amber-300 border-amber-800'
                               : 'bg-orange-100 text-orange-800 border-orange-200'
-                          }`}>ℹ️ Bio</span>
+                          }`}>Bio</span>
                         </button>
                         <p className={`text-[9px] mt-0.5 ${
                           theme === 'night' ? 'text-slate-300' : 'text-amber-850'
@@ -3598,7 +3602,6 @@ export default function App() {
                           }`}
                           title="View artist bio, email & contact phone number"
                         >
-                          <span>👤</span>
                           <span>{language === 'en' ? "Artist Profile" : "Wasifu"}</span>
                         </button>
 
@@ -3668,7 +3671,7 @@ export default function App() {
                               ? 'bg-amber-950/60 text-amber-300 border-amber-700/60'
                               : 'bg-amber-100 text-amber-900 border-amber-200'
                           }`}>
-                            🎨 {activePage.artistName}
+                            {activePage.artistName}
                           </span>
                         )}
                       </div>
@@ -3733,7 +3736,7 @@ export default function App() {
                           <Bookmark className={`w-3.5 h-3.5 ${bookmarks[activeBook.id] === activePageIndex ? 'fill-current' : ''}`} />
                           <span>
                             {bookmarks[activeBook.id] === activePageIndex
-                              ? (language === 'en' ? 'Bookmarked! 🔖' : 'Imewekewa Alama! 🔖')
+                              ? (language === 'en' ? 'Bookmarked!' : 'Imewekewa Alama!')
                               : TRANSLATIONS[language].bookmarkPage}
                           </span>
                         </button>
@@ -3780,10 +3783,10 @@ export default function App() {
                             : 'bg-amber-100 text-amber-800 border-amber-200'
                         }`}>
                           {(activeBook.downloadPermission || 'yes') === 'yes'
-                            ? (language === 'en' ? '🟢 Allowed' : '🟢 Inaruhusiwa')
+                            ? (language === 'en' ? 'Allowed' : 'Inaruhusiwa')
                             : (activeBook.downloadPermission || 'yes') === 'no'
-                            ? (language === 'en' ? '🔴 Restricted' : '🔴 Imezuiwa')
-                            : (language === 'en' ? '🟡 Watermark' : '🟡 Nembo')}
+                            ? (language === 'en' ? 'Restricted' : 'Imezuiwa')
+                            : (language === 'en' ? 'Watermark' : 'Nembo')}
                         </span>
                       </div>
                       
@@ -3796,24 +3799,24 @@ export default function App() {
                             setDbNotification({
                               type: 'success',
                               message: language === 'en'
-                                ? `🎉 Download Success! Successfully saved artwork for "${activePage.title}" to your family gallery.`
-                                : `🎉 Imepakuliwa! Picha ya "${activePage.title}" imehifadhiwa kwenye maktaba yako ya familia.`
+                                ? `Download Success! Successfully saved artwork for "${activePage.title}" to your family gallery.`
+                                : `Imepakuliwa! Picha ya "${activePage.title}" imehifadhiwa kwenye maktaba yako ya familia.`
                             });
                           } else if (policy === 'no') {
                             playChime('wood');
                             setDbNotification({
                               type: 'error',
                               message: language === 'en'
-                                ? `🔒 Restricted: Artist "${activeBook.author}" protects their copyright. Downloads are disabled.`
-                                : `🔒 Imezuiwa: Msanii "${activeBook.author}" analinda hakimiliki yake. Upakuaji umezuiwa.`
+                                ? `Restricted: Artist "${activeBook.author}" protects their copyright. Downloads are disabled.`
+                                : `Imezuiwa: Msanii "${activeBook.author}" analinda hakimiliki yake. Upakuaji umezuiwa.`
                             });
                           } else if (policy === 'watermark') {
                             playChime('sparkle');
                             setDbNotification({
                               type: 'success',
                               message: language === 'en'
-                                ? `🖼️ Stamped & Saved! A copy watermarked with "© PictureBook - ${activeBook.author}" has been downloaded.`
-                                : `🖼️ Imewekewa Nembo! Nakala yenye nembo ya "© PictureBook - ${activeBook.author}" imehifadhiwa.`
+                                ? `Stamped & Saved! A copy watermarked with "© PictureBook - ${activeBook.author}" has been downloaded.`
+                                : `Imewekewa Nembo! Nakala yenye nembo ya "© PictureBook - ${activeBook.author}" imehifadhiwa.`
                             });
                           }
                           setTimeout(() => setDbNotification(null), 5000);
@@ -3825,10 +3828,11 @@ export default function App() {
                         }`}
                         id="download-artwork-action-button"
                       >
-                        <span>⬇️</span>
-                        {language === 'en' 
-                          ? `Save Illustration to Phone` 
-                          : `Hifadhi Picha Kwenye Simu`}
+                        <span>
+                          {language === 'en' 
+                            ? `Save Illustration to Phone` 
+                            : `Hifadhi Picha Kwenye Simu`}
+                        </span>
                       </button>
 
                       {/* Report This Book Button */}
@@ -3842,8 +3846,7 @@ export default function App() {
                         }`}
                         id="report-this-book-button"
                       >
-                        <span>🚩</span>
-                        {language === 'en' ? "Report This Book (Parent Moderation)" : "Ripoti Kitabu Hiki (Usalama wa Mtoto)"}
+                        <span>{language === 'en' ? "Report This Book (Parent Moderation)" : "Ripoti Kitabu Hiki (Usalama wa Mtoto)"}</span>
                       </button>
                     </div>
 
@@ -3857,7 +3860,6 @@ export default function App() {
                           : 'bg-white border-orange-100'
                       }`}>
                         <div className="flex items-start gap-1.5">
-                          <span className="text-xs">❓</span>
                           <span className={`text-[10px] font-display font-extrabold leading-tight ${
                             theme === 'night' ? 'text-amber-200' : 'text-amber-955'
                           }`}>
@@ -3875,7 +3877,7 @@ export default function App() {
                           <p className={`font-extrabold mb-0.5 uppercase ${
                             theme === 'night' ? 'text-amber-400' : 'text-orange-600'
                           }`}>
-                            {language === 'en' ? "✨ Answer: It is decided by each artist" : "✨ Jibu: Inaamuliwa na kila msanii"}
+                            {language === 'en' ? "Answer: It is decided by each artist" : "Jibu: Inaamuliwa na kila msanii"}
                           </p>
                           <p>
                             {language === 'en'

@@ -8,6 +8,8 @@ import {
   signInWithPopup,
   sendEmailVerification, 
   sendPasswordResetEmail,
+  applyActionCode,
+  checkActionCode,
   signOut,
   deleteUser,
   onAuthStateChanged,
@@ -593,7 +595,11 @@ export interface ArtistProfile {
   role: 'artist' | 'student' | 'admin';
   status: 'unapplied' | 'pending' | 'pending_application' | 'approved' | 'rejected' | 'suspended';
   artistStatus?: 'unapplied' | 'pending' | 'pending_application' | 'approved' | 'rejected' | 'suspended';
+  adminVerified?: boolean;
+  verifiedAt?: string;
   sampleImageUrl?: string;
+  artistApplicationSubmitted?: boolean;
+  artistApplicationDate?: string;
   isEmailVerified: boolean;
   createdAt: any;
 }
@@ -866,6 +872,8 @@ export const registerArtistWithFirebase = async (artistData: {
   status?: 'unapplied' | 'pending' | 'pending_application' | 'approved' | 'rejected' | 'suspended';
   artistStatus?: 'unapplied' | 'pending' | 'pending_application' | 'approved' | 'rejected' | 'suspended';
   role?: 'artist' | 'student' | 'admin';
+  adminVerified?: boolean;
+  verifiedAt?: string;
   createdAt?: any;
 }) => {
   const cleanEmail = artistData.email.trim().toLowerCase();
@@ -878,9 +886,13 @@ export const registerArtistWithFirebase = async (artistData: {
       user = userCredential.user;
       uid = user.uid;
 
-      // Send verification email immediately
+      // Send verification email with redirect to app with email autofilled
       try {
-        await sendEmailVerification(user);
+        const actionCodeSettings = {
+          url: `${window.location.origin}${window.location.pathname}?verify_email=${encodeURIComponent(cleanEmail)}`,
+          handleCodeInApp: true
+        };
+        await sendEmailVerification(user, actionCodeSettings);
       } catch (verifErr) {
         console.warn("sendEmailVerification notice:", verifErr);
       }
@@ -892,7 +904,11 @@ export const registerArtistWithFirebase = async (artistData: {
           uid = user.uid;
           if (!user.emailVerified) {
             try {
-              await sendEmailVerification(user);
+              const actionCodeSettings = {
+                url: `${window.location.origin}${window.location.pathname}?verify_email=${encodeURIComponent(cleanEmail)}`,
+                handleCodeInApp: true
+              };
+              await sendEmailVerification(user, actionCodeSettings);
             } catch (vErr) {
               console.warn("Resend email verification notice:", vErr);
             }
@@ -930,9 +946,10 @@ export const registerArtistWithFirebase = async (artistData: {
     bio: bio,
     specialization: specialization,
     categories: categories,
-    role: 'artist' as const,
-    status: 'approved' as const,
-    artistStatus: 'approved' as const,
+    role: (artistData.role || 'artist') as any,
+    status: artistData.status || (artistData.role === 'admin' ? 'approved' : 'unapplied'),
+    artistStatus: artistData.artistStatus || artistData.status || (artistData.role === 'admin' ? 'approved' : 'unapplied'),
+    adminVerified: artistData.adminVerified !== undefined ? artistData.adminVerified : (artistData.role === 'admin' ? true : false),
     avatar: artistData.avatar || '🎨',
     profilePicUrl: artistData.profilePicUrl || '',
     sampleImageUrl: artistData.sampleImageUrl || '',
@@ -1038,8 +1055,11 @@ export const fetchArtistsFromFirestore = async (limitCount: number = 50): Promis
         role: data.role || 'artist',
         status: data.status || 'pending',
         artistStatus: data.artistStatus || data.status || 'pending',
+        adminVerified: data.adminVerified === true || data.role === 'admin' || data.status === 'approved' || data.artistStatus === 'approved',
+        verifiedAt: data.verifiedAt || (data.status === 'approved' ? (data.createdAt || new Date().toISOString()) : ''),
         sampleImageUrl: data.sampleImageUrl || '',
         isEmailVerified: data.isEmailVerified ?? true,
+        artistApplicationSubmitted: Boolean(data.artistApplicationSubmitted || data.sampleImageUrl || data.status === 'approved'),
         createdAt: data.createdAt || new Date().toISOString()
       });
     });
@@ -1071,8 +1091,11 @@ export const fetchArtistsFromFirestore = async (limitCount: number = 50): Promis
                 role: la.role || 'artist',
                 status: la.status || 'pending',
                 artistStatus: la.artistStatus || la.status || 'pending',
+                adminVerified: la.adminVerified === true || la.role === 'admin' || la.status === 'approved' || la.artistStatus === 'approved',
+                verifiedAt: la.verifiedAt || (la.status === 'approved' ? (la.createdAt || new Date().toISOString()) : ''),
                 sampleImageUrl: la.sampleImageUrl || '',
                 isEmailVerified: la.isEmailVerified ?? true,
+                artistApplicationSubmitted: Boolean(la.artistApplicationSubmitted || la.sampleImageUrl || la.status === 'approved'),
                 createdAt: la.createdAt || new Date().toISOString()
               });
             }
@@ -1363,18 +1386,25 @@ export const updateArtistStatusInFirestore = async (
 ): Promise<void> => {
   const cleanEmail = email.trim().toLowerCase();
   const targetUid = uid || (auth.currentUser && auth.currentUser.email?.toLowerCase() === cleanEmail ? auth.currentUser.uid : null);
+  const isAdminVerified = status === 'approved';
+  const statusPayload: any = { 
+    status, 
+    artistStatus: status,
+    adminVerified: isAdminVerified,
+    ...(isAdminVerified ? { verifiedAt: new Date().toISOString() } : {})
+  };
   
   try {
     const writes: Promise<any>[] = [];
     if (targetUid) {
       writes.push(
-        withTimeout(setDoc(doc(db, 'artists', targetUid), { status, artistStatus: status }, { merge: true }), 3500),
-        withTimeout(setDoc(doc(db, 'users', targetUid), { status, artistStatus: status }, { merge: true }), 3500)
+        withTimeout(setDoc(doc(db, 'artists', targetUid), statusPayload, { merge: true }), 3500),
+        withTimeout(setDoc(doc(db, 'users', targetUid), statusPayload, { merge: true }), 3500)
       );
     }
     if (cleanEmail.includes('@')) {
       writes.push(
-        withTimeout(setDoc(doc(db, 'artists', cleanEmail), { status, artistStatus: status }, { merge: true }), 3500)
+        withTimeout(setDoc(doc(db, 'artists', cleanEmail), statusPayload, { merge: true }), 3500)
       );
     }
     await Promise.all(writes);
@@ -1387,7 +1417,7 @@ export const updateArtistStatusInFirestore = async (
     if (Array.isArray(list)) {
       const updated = list.map((a: any) => {
         if (a && ((cleanEmail && a.email?.toLowerCase() === cleanEmail) || (targetUid && a.uid === targetUid))) {
-          return { ...a, status, artistStatus: status };
+          return { ...a, ...statusPayload };
         }
         return a;
       });
@@ -1402,10 +1432,23 @@ export const updateArtistStatusInFirestore = async (
     if (activeAccount && ((cleanEmail && activeAccount.email?.toLowerCase() === cleanEmail) || (targetUid && activeAccount.uid === targetUid))) {
       activeAccount.status = status;
       activeAccount.artistStatus = status;
+      activeAccount.adminVerified = isAdminVerified;
+      if (isAdminVerified) activeAccount.verifiedAt = new Date().toISOString();
       safeSetItem('digipicture_user_account', activeAccount);
     }
   } catch (e) {
     console.error(e);
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('digipicture_artist_status_updated', {
+      detail: {
+        email: cleanEmail,
+        uid: targetUid,
+        status,
+        adminVerified: isAdminVerified
+      }
+    }));
   }
 };
 
@@ -1497,11 +1540,41 @@ export const verifyAndActivateArtistInFirestore = async (email: string): Promise
 export const sendVerificationEmail = async (user?: FirebaseUser) => {
   const currentUser = user || auth.currentUser;
   if (currentUser) {
+    const email = currentUser.email || '';
     await sendEmailVerification(currentUser, {
-      url: window.location.origin + '?verify_email=' + encodeURIComponent(currentUser.email || ''),
+      url: `${window.location.origin}${window.location.pathname}?verify_email=${encodeURIComponent(email)}`,
       handleCodeInApp: true
     });
   }
+};
+
+/**
+ * Handle incoming email verification links from URL search parameters,
+ * applying Firebase Auth action codes if present, and activating the artist in Firestore.
+ */
+export const handleIncomingEmailVerification = async (searchParams: URLSearchParams): Promise<string | null> => {
+  const oobCode = searchParams.get('oobCode');
+  const mode = searchParams.get('mode');
+  let email = searchParams.get('verify_email') || searchParams.get('email') || null;
+
+  if (oobCode && (mode === 'verifyEmail' || !mode)) {
+    try {
+      const info = await checkActionCode(auth, oobCode);
+      if (info?.data?.email) {
+        email = info.data.email;
+      }
+      await applyActionCode(auth, oobCode);
+    } catch (err) {
+      console.warn("Firebase applyActionCode notice:", err);
+    }
+  }
+
+  if (email) {
+    const cleanEmail = email.trim().toLowerCase();
+    await verifyAndActivateArtistInFirestore(cleanEmail);
+    return cleanEmail;
+  }
+  return null;
 };
 
 export const signOutFromFirebaseAndClearSession = async (): Promise<void> => {

@@ -179,17 +179,34 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleApproveArtist = async (email: string) => {
     try {
       await updateArtistStatusInFirestore(email, 'approved');
-      setArtists(prev => prev.map(a => a.email.toLowerCase() === email.toLowerCase() ? { ...a, status: 'approved', artistStatus: 'approved' } : a));
+      setArtists(prev => prev.map(a => a.email.toLowerCase() === email.toLowerCase() ? { 
+        ...a, 
+        status: 'approved', 
+        artistStatus: 'approved',
+        adminVerified: true,
+        verifiedAt: new Date().toISOString()
+      } : a));
       
       try {
         let list = safeGetJSON<any[]>('digipicture_registered_artists', []);
         if (Array.isArray(list)) {
-          list = list.map((a: any) => a.email?.toLowerCase() === email.toLowerCase() ? { ...a, status: 'approved', artistStatus: 'approved' } : a);
+          list = list.map((a: any) => a.email?.toLowerCase() === email.toLowerCase() ? { 
+            ...a, 
+            status: 'approved', 
+            artistStatus: 'approved',
+            adminVerified: true,
+            verifiedAt: new Date().toISOString()
+          } : a);
           safeSetItem('digipicture_registered_artists', list);
         }
         
         if (userAccount?.email?.toLowerCase() === email.toLowerCase()) {
-          onUpdateUserAccount({ status: 'approved', artistStatus: 'approved' });
+          onUpdateUserAccount({ 
+            status: 'approved', 
+            artistStatus: 'approved',
+            adminVerified: true,
+            verifiedAt: new Date().toISOString()
+          });
         }
       } catch (e) {
         console.error("Failed updating local artist status:", e);
@@ -226,16 +243,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const handleRejectArtist = async (email: string) => {
     try {
       await updateArtistStatusInFirestore(email, 'rejected');
-      setArtists(prev => prev.map(a => a.email.toLowerCase() === email.toLowerCase() ? { ...a, status: 'rejected', artistStatus: 'rejected' } : a));
+      setArtists(prev => prev.map(a => a.email.toLowerCase() === email.toLowerCase() ? { 
+        ...a, 
+        status: 'rejected', 
+        artistStatus: 'rejected',
+        adminVerified: false 
+      } : a));
 
       try {
         let list = safeGetJSON<any[]>('digipicture_registered_artists', []);
         if (Array.isArray(list)) {
-          list = list.map((a: any) => a.email?.toLowerCase() === email.toLowerCase() ? { ...a, status: 'rejected', artistStatus: 'rejected' } : a);
+          list = list.map((a: any) => a.email?.toLowerCase() === email.toLowerCase() ? { 
+            ...a, 
+            status: 'rejected', 
+            artistStatus: 'rejected',
+            adminVerified: false 
+          } : a);
           safeSetItem('digipicture_registered_artists', list);
         }
         if (userAccount?.email?.toLowerCase() === email.toLowerCase()) {
-          onUpdateUserAccount({ status: 'rejected', artistStatus: 'rejected' });
+          onUpdateUserAccount({ 
+            status: 'rejected', 
+            artistStatus: 'rejected',
+            adminVerified: false
+          });
         }
       } catch (e) {
         console.error("Failed updating local artist status:", e);
@@ -283,7 +314,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           safeSetItem('digipicture_registered_artists', list);
         }
         if (userAccount?.email?.toLowerCase() === email.toLowerCase()) {
-          onUpdateUserAccount({ status: 'suspended', artistStatus: 'suspended' });
+          onUpdateUserAccount({ 
+            status: 'suspended', 
+            artistStatus: 'suspended',
+            adminVerified: false
+          });
         }
       } catch (e) {
         console.error("Failed updating local artist status:", e);
@@ -455,9 +490,47 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const pendingArtists = artists.filter(a => a.status === 'pending' || a.status === 'pending_application' || a.artistStatus === 'pending_application' || a.status === 'unapplied' || a.artistStatus === 'unapplied');
+  const formatRegistrationDate = (createdAt: any): string => {
+    if (!createdAt) return '—';
+    try {
+      if (typeof createdAt === 'object' && createdAt !== null && 'seconds' in createdAt) {
+        return new Date(createdAt.seconds * 1000).toLocaleDateString();
+      }
+      if (typeof createdAt === 'string' || typeof createdAt === 'number') {
+        const d = new Date(createdAt);
+        if (!isNaN(d.getTime())) return d.toLocaleDateString();
+      }
+    } catch {}
+    return '—';
+  };
+
+  const isArtistApproved = (a: ArtistProfile): boolean => {
+    return a.role === 'admin' || a.status === 'approved' || a.artistStatus === 'approved' || a.adminVerified === true;
+  };
+
+  const getArtistDisplayStatus = (a: ArtistProfile): 'approved' | 'pending' | 'rejected' | 'suspended' | 'unapplied' => {
+    if (isArtistApproved(a)) return 'approved';
+    if (a.status === 'suspended' || a.artistStatus === 'suspended') return 'suspended';
+    if (a.status === 'rejected' || a.artistStatus === 'rejected') return 'rejected';
+    if (a.status === 'pending' || a.status === 'pending_application' || a.artistStatus === 'pending' || a.artistStatus === 'pending_application' || Boolean(a.sampleImageUrl)) {
+      return 'pending';
+    }
+    return 'unapplied';
+  };
+
+  const pendingArtists = artists.filter(a => 
+    a.role === 'artist' && 
+    !isArtistApproved(a) &&
+    (
+      a.status === 'pending' || 
+      a.status === 'pending_application' || 
+      a.artistStatus === 'pending' || 
+      a.artistStatus === 'pending_application' ||
+      Boolean(a.sampleImageUrl && a.status !== 'approved' && a.status !== 'rejected')
+    )
+  );
   const pendingBooks = books.filter(b => b.status === 'pending_review' || b.status === 'pending_approval');
-  const approvedArtists = artists.filter(a => a.status === 'approved');
+  const approvedArtists = artists.filter(a => isArtistApproved(a));
   const publishedApprovedBooks = books.filter(b => {
     if (b.status === 'draft' || b.status === 'pending_approval' || b.status === 'pending_review' || b.status === 'flagged') {
       return false;
@@ -470,7 +543,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const matchesSearch = (a.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
                           (a.email || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
                           (a.username || '').toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || a.status === statusFilter;
+    const dispStatus = getArtistDisplayStatus(a);
+    const matchesStatus = statusFilter === 'all' || 
+                          a.status === statusFilter || 
+                          dispStatus === statusFilter ||
+                          (statusFilter === 'unapplied' && dispStatus === 'unapplied');
     return matchesSearch && matchesStatus;
   });
 
@@ -937,7 +1014,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               </p>
                             )}
                             <p className="text-[10px] text-gray-500 dark:text-slate-400 mt-0.5">
-                              {language === 'en' ? 'Registered:' : 'Alisajiliwa:'} {new Date(artist.createdAt || Date.now()).toLocaleDateString()}
+                              {language === 'en' ? 'Registered:' : 'Alisajiliwa:'} {formatRegistrationDate(artist.createdAt)}
                             </p>
                           </div>
                         </div>
@@ -1167,7 +1244,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 >
                   <option value="all">{language === 'en' ? 'All Statuses' : 'Status Zote'}</option>
                   <option value="approved">Approved</option>
-                  <option value="pending">Pending</option>
+                  <option value="pending">Pending Review</option>
+                  <option value="unapplied">Not Yet Applied</option>
                   <option value="suspended">Suspended</option>
                   <option value="rejected">Rejected</option>
                 </select>
@@ -1200,7 +1278,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </td>
                       </tr>
                     ) : (
-                      filteredArtists.map((artist) => (
+                      filteredArtists.map((artist) => {
+                        const artistApproved = isArtistApproved(artist);
+                        const displayStatus = getArtistDisplayStatus(artist);
+                        return (
                         <tr key={artist.email} className={`transition hover:bg-amber-50/30 ${
                           isNight ? 'hover:bg-slate-800/40' : ''
                         }`}>
@@ -1231,17 +1312,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </td>
 
                           <td className="p-4">
-                            <span className={`px-2.5 py-0.5 rounded-full font-extrabold text-[10px] uppercase border flex items-center gap-1 w-fit ${
-                              artist.status === 'approved' ? 'bg-emerald-100 text-emerald-900 border-emerald-300' :
-                              artist.status === 'pending' ? 'bg-amber-100 text-amber-955 border-amber-300' :
-                              artist.status === 'suspended' ? 'bg-rose-100 text-rose-900 border-rose-300' :
-                              'bg-gray-100 text-gray-800 border-gray-300'
-                            }`}>
-                              {artist.status === 'approved' && <Check className="w-3 h-3 text-emerald-700" />}
-                              {artist.status === 'pending' && <Clock className="w-3 h-3 text-amber-700" />}
-                              {artist.status === 'suspended' && <Ban className="w-3 h-3 text-rose-700" />}
-                              <span>{artist.status}</span>
-                            </span>
+                            {artistApproved ? (
+                              <span className="px-2.5 py-0.5 rounded-full font-extrabold text-[10px] uppercase border flex items-center gap-1 w-fit bg-emerald-100 text-emerald-900 border-emerald-300">
+                                <Check className="w-3 h-3 text-emerald-700" />
+                                <span>{language === 'en' ? 'Approved' : 'Imeidhinishwa'}</span>
+                              </span>
+                            ) : displayStatus === 'suspended' ? (
+                              <span className="px-2.5 py-0.5 rounded-full font-extrabold text-[10px] uppercase border flex items-center gap-1 w-fit bg-rose-100 text-rose-900 border-rose-300">
+                                <Ban className="w-3 h-3 text-rose-700" />
+                                <span>{language === 'en' ? 'Suspended' : 'Imesitishwa'}</span>
+                              </span>
+                            ) : displayStatus === 'rejected' ? (
+                              <span className="px-2.5 py-0.5 rounded-full font-extrabold text-[10px] uppercase border flex items-center gap-1 w-fit bg-rose-100 text-rose-800 border-rose-300">
+                                <X className="w-3 h-3 text-rose-700" />
+                                <span>{language === 'en' ? 'Rejected' : 'Imekataliwa'}</span>
+                              </span>
+                            ) : displayStatus === 'pending' ? (
+                              <span className="px-2.5 py-0.5 rounded-full font-extrabold text-[10px] uppercase border flex items-center gap-1 w-fit bg-amber-100 text-amber-955 border-amber-300">
+                                <Clock className="w-3 h-3 text-amber-700" />
+                                <span>{language === 'en' ? 'Pending Review' : 'Inasubiri Ukaguzi'}</span>
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-0.5 rounded-full font-extrabold text-[10px] uppercase border flex items-center gap-1 w-fit bg-slate-100 text-slate-700 border-slate-300">
+                                <Clock className="w-3 h-3 text-slate-500" />
+                                <span>{language === 'en' ? 'Not Yet Applied' : 'Hajawasilisha Ombi'}</span>
+                              </span>
+                            )}
                           </td>
 
                           <td className="p-4">
@@ -1258,7 +1354,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </td>
 
                           <td className="p-4 text-gray-600 dark:text-slate-400 font-mono text-[11px]">
-                            {new Date(artist.createdAt).toLocaleDateString()}
+                            {formatRegistrationDate(artist.createdAt)}
                           </td>
 
                           <td className="p-4 text-right">
@@ -1273,17 +1369,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               </div>
                             ) : (
                               <div className="flex items-center justify-end gap-1.5">
-                                {artist.status !== 'approved' && (
-                                  <button
-                                    onClick={() => handleApproveArtist(artist.email)}
-                                    className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-[10px] rounded-lg transition cursor-pointer flex items-center gap-1 shadow-xs"
-                                  >
-                                    <UserCheck className="w-3 h-3" />
-                                    <span>{language === 'en' ? 'Approve' : 'Idhinisha'}</span>
-                                  </button>
-                                )}
+                                {!artistApproved ? (
+                                  <>
+                                    <button
+                                      onClick={() => handleApproveArtist(artist.email)}
+                                      className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-[10px] rounded-lg transition cursor-pointer flex items-center gap-1 shadow-xs"
+                                      title={language === 'en' ? 'Approve artist application' : 'Idhinisha msanii'}
+                                    >
+                                      <UserCheck className="w-3 h-3" />
+                                      <span>{language === 'en' ? 'Approve' : 'Idhinisha'}</span>
+                                    </button>
 
-                                {artist.status === 'approved' && (
+                                    {displayStatus !== 'rejected' && (
+                                      <button
+                                        onClick={() => handleRejectArtist(artist.email)}
+                                        className="px-2.5 py-1 bg-rose-100 hover:bg-rose-200 text-rose-800 font-bold text-[10px] rounded-lg transition cursor-pointer flex items-center gap-1 shadow-xs"
+                                        title={language === 'en' ? 'Decline application' : 'Kataa ombi'}
+                                      >
+                                        <XCircle className="w-3 h-3" />
+                                        <span>{language === 'en' ? 'Reject' : 'Kataa'}</span>
+                                      </button>
+                                    )}
+                                  </>
+                                ) : (
                                   <button
                                     onClick={() => handleSuspendArtist(artist.email)}
                                     className="px-2.5 py-1 bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold text-[10px] rounded-lg transition cursor-pointer flex items-center gap-1 shadow-xs"
@@ -1307,7 +1415,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             )}
                           </td>
                         </tr>
-                      ))
+                        );
+                      })
                     )}
                   </tbody>
                 </table>

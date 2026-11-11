@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import {
@@ -33,12 +33,15 @@ import {
   Globe,
   Tag,
   HelpCircle,
-  X
+  Clock,
+  X,
+  Upload,
+  Plus
 } from 'lucide-react';
 import { playChime, maskEmail } from '../data';
 import { isValidEmail, securityRateLimiter, sanitizeInput, sanitizeSqlInjection, evaluatePasswordStrength, hashPasswordAsync, verifyPasswordAsync, generateSessionToken } from '../utils/security';
 import { UserRegistrationSchema, UserLoginSchema, validateWithSchema } from '../utils/validationSchemas';
-import { safeGetJSON, safeSetItem } from '../utils/storage';
+import { safeGetJSON, safeSetItem, compressImageFile } from '../utils/storage';
 
 import { UserAccount, UserRole, UserStatus } from '../types';
 export type { UserAccount };
@@ -51,6 +54,10 @@ interface AuthModalProps {
   language: 'en' | 'sw';
   theme?: 'day' | 'night';
   onLogout?: () => Promise<void> | void;
+  initialStep?: 'role_select' | 'artist_auth' | 'student_setup';
+  initialAuthTab?: 'login' | 'signup' | 'forgot_password' | 'email_verification';
+  initialLoginEmail?: string;
+  initialSuccessNotice?: string;
 }
 
 const ARTIST_CATEGORIES = [
@@ -63,19 +70,7 @@ const ARTIST_CATEGORIES = [
   'Digital Art & Fine Art'
 ];
 
-const PRESET_AVATARS = ['🎨', '👩‍🎨', '👨‍🎨', '🦊', '🦁', '🐼', '🦄', '🦉', '🔮', '🖌️'];
-const PRESET_AVATAR_IMAGES: Record<string, string> = {
-  '🎨': 'https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?auto=format&fit=crop&w=400&q=80',
-  '👩‍🎨': 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80',
-  '👨‍🎨': 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=400&q=80',
-  '🦊': 'https://images.unsplash.com/photo-1516934024742-b461fba47600?auto=format&fit=crop&w=400&q=80',
-  '🦁': 'https://images.unsplash.com/photo-1534188753412-3e26d0d618d6?auto=format&fit=crop&w=400&q=80',
-  '🐼': 'https://images.unsplash.com/photo-1564349683136-77e08dba1ef7?auto=format&fit=crop&w=400&q=80',
-  '🦄': 'https://images.unsplash.com/photo-1550684848-fac1c5b4e853?auto=format&fit=crop&w=400&q=80',
-  '🦉': 'https://images.unsplash.com/photo-1579202673506-ca3ce28943ef?auto=format&fit=crop&w=400&q=80',
-  '🔮': 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=400&q=80',
-  '🖌️': 'https://images.unsplash.com/photo-1513364776144-60967b0f800f?auto=format&fit=crop&w=400&q=80'
-};
+const PRESET_AVATARS = ['🎨', '👩‍🎨', '🧑‍🎨', '👨‍🎨', '🖌️', '🎭', '🦊', '🦁', '🐼', '🦄', '🦉', '🐯', '🐰', '🌟', '🚀', '🔮'];
 
 export default function AuthModal({
   isOpen,
@@ -84,7 +79,11 @@ export default function AuthModal({
   currentAccount,
   language,
   theme = 'day',
-  onLogout
+  onLogout,
+  initialStep,
+  initialAuthTab,
+  initialLoginEmail,
+  initialSuccessNotice
 }: AuthModalProps) {
   const isNight = theme === 'night';
 
@@ -94,6 +93,19 @@ export default function AuthModal({
   
   // Artist auth tab: 'login' | 'signup' | 'forgot_password' | 'email_verification'
   const [authTab, setAuthTab] = useState<'login' | 'signup' | 'forgot_password' | 'email_verification'>('login');
+
+  // Synchronize initial state when opening or when initial props update
+  useEffect(() => {
+    if (isOpen) {
+      if (initialStep) setStep(initialStep);
+      if (initialAuthTab) setAuthTab(initialAuthTab);
+      if (initialLoginEmail) setLoginIdentifier(initialLoginEmail);
+      if (initialSuccessNotice) {
+        setSuccessNotice(initialSuccessNotice);
+        setErrorMessage(null);
+      }
+    }
+  }, [isOpen, initialStep, initialAuthTab, initialLoginEmail, initialSuccessNotice]);
 
   // Forgot Password state
   const [resetEmail, setResetEmail] = useState('');
@@ -112,8 +124,56 @@ export default function AuthModal({
   const [signupEmail, setSignupEmail] = useState('');
   const [signupPhone, setSignupPhone] = useState('');
   const [signupAvatar, setSignupAvatar] = useState('🎨');
-  const [signupProfilePicUrl, setSignupProfilePicUrl] = useState('https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?auto=format&fit=crop&w=400&q=80');
-  const [signupSampleImageUrl, setSignupSampleImageUrl] = useState('https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?auto=format&fit=crop&w=800&q=80');
+  const [signupProfilePicUrl, setSignupProfilePicUrl] = useState('');
+  const photoFileInputRef = useRef<HTMLInputElement>(null);
+  const [customAvatarInput, setCustomAvatarInput] = useState('');
+  const [showCustomAvatarInput, setShowCustomAvatarInput] = useState(false);
+  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [isProcessingPhoto, setIsProcessingPhoto] = useState(false);
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setErrorMessage(language === 'en' ? 'Please select a valid image file (PNG, JPG, WEBP).' : 'Tafadhali chagua faili halali ya picha (PNG, JPG, WEBP).');
+      return;
+    }
+
+    try {
+      setIsProcessingPhoto(true);
+      const compressedDataUrl = await compressImageFile(file, 600, 600, 0.85);
+      setSignupProfilePicUrl(compressedDataUrl);
+      playChime('sparkle');
+    } catch (err) {
+      console.error('Error reading/compressing photo:', err);
+      setErrorMessage(language === 'en' ? 'Failed to process photo. Please try a different image.' : 'Imeshindwa kusindika picha. Tafadhali jaribu picha nyingine.');
+    } finally {
+      setIsProcessingPhoto(false);
+      if (photoFileInputRef.current) {
+        photoFileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleRemovePhoto = () => {
+    setSignupProfilePicUrl('');
+    if (photoFileInputRef.current) {
+      photoFileInputRef.current.value = '';
+    }
+    playChime('pop');
+  };
+
+  const handleAddCustomAvatar = () => {
+    const trimmed = customAvatarInput.trim();
+    if (!trimmed) return;
+    setSignupAvatar(trimmed);
+    setSignupProfilePicUrl('');
+    setCustomAvatarInput('');
+    setShowCustomAvatarInput(false);
+    playChime('sparkle');
+  };
+  const [signupSampleImageUrl, setSignupSampleImageUrl] = useState('');
   // State array for selected categories and auto-synchronized specialization text
   const [selectedCategories, setSelectedCategories] = useState<string[]>(['Storybook Illustration', 'Sculpture & Clay']);
   const signupCategories = selectedCategories;
@@ -498,10 +558,14 @@ export default function AuthModal({
       console.error(e);
     }
 
+    const isApproved = found.status === 'approved' || found.artistStatus === 'approved' || found.adminVerified === true || userRole === 'admin';
     const authenticatedAccount: UserAccount = {
       role: userRole,
       status: found.status || found.artistStatus || (userRole === 'admin' ? 'approved' : 'unapplied'),
       artistStatus: found.artistStatus || found.status || (userRole === 'admin' ? 'approved' : 'unapplied'),
+      adminVerified: isApproved,
+      verifiedAt: found.verifiedAt || (isApproved ? new Date().toISOString() : ''),
+      artistApplicationSubmitted: found.artistApplicationSubmitted ?? (Boolean(found.sampleImageUrl) || isApproved),
       sampleImageUrl: found.sampleImageUrl || '',
       name: found.name || (userRole === 'admin' ? 'System Administrator' : 'Creative Artist'),
       firstName: found.firstName || '',
@@ -654,12 +718,17 @@ export default function AuthModal({
         }
 
         const role = (existingData?.role === 'admin' || cleanEmail === 'yamauchiryoko16@gmail.com' || cleanEmail === 'admin@digipicture.org' || cleanEmail === 'terrysalee1@gmail.com') ? 'admin' : (existingData?.role || 'artist');
-        const status = existingData?.status || 'pending';
+        const isApproved = existingData?.status === 'approved' || existingData?.artistStatus === 'approved' || existingData?.adminVerified === true || role === 'admin';
+        const status = existingData?.status || (isApproved ? 'approved' : 'unapplied');
 
         const googleAccount: UserAccount = {
           role: role as any,
           status: status as any,
           artistStatus: (existingData?.artistStatus || status) as any,
+          adminVerified: isApproved,
+          verifiedAt: existingData?.verifiedAt || (isApproved ? new Date().toISOString() : ''),
+          artistApplicationSubmitted: existingData?.artistApplicationSubmitted ?? (Boolean(existingData?.sampleImageUrl) || isApproved),
+          sampleImageUrl: existingData?.sampleImageUrl || '',
           name: existingData?.name || displayName,
           firstName: existingData?.firstName || displayName.split(' ')[0] || '',
           lastName: existingData?.lastName || displayName.split(' ').slice(1).join(' ') || '',
@@ -844,11 +913,13 @@ export default function AuthModal({
       specialization: specialization,
       categories: categories,
       role: 'artist' as const,
-      status: 'approved' as const,
-      artistStatus: 'approved' as const,
+      status: 'unapplied' as any,
+      artistStatus: 'unapplied' as any,
+      adminVerified: false,
+      artistApplicationSubmitted: false,
       avatar: signupAvatar || '🎨',
       profilePicUrl: signupProfilePicUrl.trim(),
-      sampleImageUrl: signupSampleImageUrl.trim(),
+      sampleImageUrl: '',
       createdAt: serverTimestamp()
     };
 
@@ -867,9 +938,10 @@ export default function AuthModal({
         categories: categories,
         avatar: signupAvatar || '🎨',
         profilePicUrl: signupProfilePicUrl.trim(),
-        sampleImageUrl: signupSampleImageUrl.trim(),
-        status: 'approved',
-        artistStatus: 'approved',
+        sampleImageUrl: '',
+        status: 'unapplied',
+        artistStatus: 'unapplied',
+        adminVerified: false,
         role: 'artist'
       });
     } catch (fbErr: any) {
@@ -892,8 +964,10 @@ export default function AuthModal({
 
     const newArtist = {
       role: 'artist' as const,
-      status: 'approved' as const,
-      artistStatus: 'approved' as const,
+      status: 'unapplied' as any,
+      artistStatus: 'unapplied' as any,
+      adminVerified: false,
+      artistApplicationSubmitted: false,
       name: `${firstName} ${lastName}`,
       firstName: firstName,
       lastName: lastName,
@@ -903,7 +977,7 @@ export default function AuthModal({
       phone: phone || existingByEmail?.phone || '',
       avatar: signupAvatar || existingByEmail?.avatar || '🎨',
       profilePicUrl: signupProfilePicUrl.trim() || existingByEmail?.profilePicUrl || '',
-      sampleImageUrl: signupSampleImageUrl.trim() || existingByEmail?.sampleImageUrl || '',
+      sampleImageUrl: '',
       categories: categories,
       specialization: specialization || existingByEmail?.specialization || '',
       bio: bio || existingByEmail?.bio || 'Creative Artist on PictureBook',
@@ -1240,7 +1314,7 @@ export default function AuthModal({
                           }`}>
                             {pendingVerificationEmail || 'your email address'}
                           </span>
-                          . Verify it and log in
+                          . Please click the link sent to your email to verify your account and log in.
                         </>
                       ) : (
                         <>
@@ -1250,31 +1324,29 @@ export default function AuthModal({
                           }`}>
                             {pendingVerificationEmail || 'barua pepe yako'}
                           </span>
-                          . Ithibitishe na uingie
+                          . Tafadhali bofya kiungo kilichotumwa kwenye barua pepe yako ili kuthibitisha akaunti yako na kuingia.
                         </>
                       )}
                     </p>
                   </div>
 
-                  {/* Single Log In button that redirects the user back to the login view */}
-                  <div className="max-w-xs mx-auto pt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthTab('login');
-                        if (pendingVerificationEmail) {
-                          setLoginIdentifier(pendingVerificationEmail);
-                        }
-                        setErrorMessage(null);
-                        setSuccessNotice(null);
-                        playChime('pop');
-                      }}
-                      className="w-full py-3 px-6 bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-display font-extrabold text-sm sm:text-base rounded-2xl shadow-md hover:shadow-lg transition cursor-pointer flex items-center justify-center gap-2 border-b-4 border-orange-700 active:translate-y-0.5"
-                      id="email-verification-login-btn"
-                    >
-                      <LogIn className="w-4 h-4 sm:w-5 sm:h-5" />
-                      <span>{language === 'en' ? 'Log In' : 'Ingia'}</span>
-                    </button>
+                  {/* Status notice instructing user to click link in their email */}
+                  <div className="max-w-sm mx-auto pt-2 space-y-2.5">
+                    <div className={`p-4 rounded-2xl border flex items-center justify-center gap-2.5 text-xs font-semibold ${
+                      isNight ? 'bg-amber-955/40 border-amber-500/40 text-amber-200' : 'bg-orange-50 border-orange-200 text-orange-950'
+                    }`}>
+                      <Clock className="w-4 h-4 text-amber-500 animate-pulse shrink-0" />
+                      <span>
+                        {language === 'en'
+                          ? 'Waiting for verification link to be clicked...'
+                          : 'Inasubiri kiungo cha uthibitisho kubofya...'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                      {language === 'en'
+                        ? 'Did not receive the email? Please check your spam or junk folder.'
+                        : 'Hujaona barua pepe? Tafadhali kagua folda yako ya barua taka (spam).'}
+                    </p>
                   </div>
                 </div>
               )}
@@ -1648,56 +1720,209 @@ export default function AuthModal({
                   </div>
 
                   {/* Profile Picture / Avatar */}
-                  <div>
-                    <label className={`block text-xs font-display font-bold mb-1 ${
-                      isNight ? 'text-amber-200' : 'text-amber-955'
-                    }`}>
-                      {language === 'en' ? 'Profile Avatar or Photo URL *' : 'Avatar au Picha ya Wasifu *'}
-                    </label>
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className={`w-10 h-10 rounded-xl border flex items-center justify-center text-xl shadow-xs flex-shrink-0 ${
-                        isNight ? 'bg-slate-800 border-slate-700' : 'bg-orange-100 border-orange-300'
+                  <div className={`p-3.5 rounded-2xl border-2 transition-all ${
+                    isNight ? 'bg-slate-800/80 border-slate-700' : 'bg-orange-50/40 border-orange-200'
+                  }`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className={`block text-xs font-display font-bold ${
+                        isNight ? 'text-amber-200' : 'text-amber-955'
                       }`}>
-                        {signupProfilePicUrl ? (
-                          <img src={signupProfilePicUrl} alt="Profile" className="w-full h-full object-cover rounded-xl" />
-                        ) : (
-                          signupAvatar
+                        {language === 'en' ? 'Profile Photo or Avatar' : 'Picha ya Wasifu au Avatar'}
+                      </label>
+                      <span className="text-[10px] text-gray-500 font-medium">
+                        {signupProfilePicUrl
+                          ? (language === 'en' ? 'Custom Photo Active' : 'Picha Imewekwa')
+                          : (language === 'en' ? 'Avatar Emoji Active' : 'Avatar ya Emoji')}
+                      </span>
+                    </div>
+
+                    {/* Preview + Action Buttons */}
+                    <div className="flex items-center gap-3 mb-3">
+                      {/* Visual Preview */}
+                      <div className="relative group flex-shrink-0">
+                        <div className={`w-14 h-14 rounded-2xl border-2 flex items-center justify-center overflow-hidden shadow-sm transition ${
+                          isNight ? 'bg-slate-900 border-amber-500/40' : 'bg-white border-orange-300'
+                        }`}>
+                          {signupProfilePicUrl ? (
+                            <img
+                              src={signupProfilePicUrl}
+                              alt="Profile Preview"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <span className="text-3xl select-none" role="img" aria-label="avatar">
+                              {signupAvatar || '🎨'}
+                            </span>
+                          )}
+                        </div>
+                        {signupProfilePicUrl && (
+                          <button
+                            type="button"
+                            onClick={handleRemovePhoto}
+                            title={language === 'en' ? 'Remove photo' : 'Ondoa picha'}
+                            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-600 hover:bg-red-700 text-white flex items-center justify-center shadow-xs text-[10px] cursor-pointer"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
                         )}
                       </div>
-                      <input
-                        type="url"
-                        required
-                        value={signupProfilePicUrl}
-                        onChange={(e) => setSignupProfilePicUrl(e.target.value)}
-                        placeholder="Custom image URL (https://...)"
-                        className={`flex-1 px-3 py-2 text-[11px] rounded-xl border-2 focus:outline-none ${
-                          isNight
-                            ? 'bg-slate-800 text-slate-100 border-slate-700 focus:border-amber-500'
-                            : 'bg-orange-50/20 text-gray-900 border-orange-200 focus:border-orange-500'
-                        }`}
-                        id="artist-signup-profile-pic-input"
-                      />
-                    </div>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {PRESET_AVATARS.map((av) => (
+
+                      {/* Action buttons: Upload Photo & Add Avatar */}
+                      <div className="flex-1 flex flex-col sm:flex-row gap-2">
+                        {/* Hidden Native File Input */}
+                        <input
+                          type="file"
+                          ref={photoFileInputRef}
+                          onChange={handlePhotoUpload}
+                          accept="image/*"
+                          className="hidden"
+                          id="artist-photo-file-input"
+                        />
+
+                        {/* Upload Photo Button */}
                         <button
-                          key={av}
                           type="button"
-                          onClick={() => {
-                            setSignupAvatar(av);
-                            setSignupProfilePicUrl(PRESET_AVATAR_IMAGES[av] || 'https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?auto=format&fit=crop&w=400&q=80');
-                            playChime('pop');
-                          }}
-                          className={`w-8 h-8 rounded-xl text-sm border flex items-center justify-center cursor-pointer transition ${
-                            signupAvatar === av
-                              ? 'bg-orange-500 text-white border-orange-600 scale-110 shadow-xs'
-                              : (isNight ? 'bg-slate-800 text-slate-100 border-slate-700 hover:bg-slate-700' : 'bg-orange-50 text-amber-955 border-orange-200 hover:bg-orange-100')
+                          onClick={() => photoFileInputRef.current?.click()}
+                          disabled={isProcessingPhoto}
+                          className={`flex-1 py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer active:scale-95 ${
+                            isNight
+                              ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                              : 'bg-orange-500 hover:bg-orange-600 text-white'
                           }`}
                         >
-                          {av}
+                          <Upload className="w-3.5 h-3.5" />
+                          <span>
+                            {isProcessingPhoto
+                              ? (language === 'en' ? 'Processing...' : 'Inasindika...')
+                              : (language === 'en' ? 'Upload Photo' : 'Pakia Picha')}
+                          </span>
                         </button>
-                      ))}
+
+                        {/* Add Avatar Button */}
+                        <button
+                          type="button"
+                          onClick={() => setShowCustomAvatarInput(!showCustomAvatarInput)}
+                          className={`py-2 px-3 rounded-xl font-bold text-xs border flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                            showCustomAvatarInput
+                              ? 'bg-orange-500 text-white border-orange-600 shadow-xs'
+                              : (isNight
+                                  ? 'bg-slate-700 hover:bg-slate-600 text-amber-200 border-slate-600'
+                                  : 'bg-white hover:bg-orange-100 text-orange-900 border-orange-300')
+                          }`}
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>{language === 'en' ? 'Add Avatar' : 'Ongeza Avatar'}</span>
+                        </button>
+                      </div>
                     </div>
+
+                    {/* Custom Avatar Input Dialog (when toggled) */}
+                    {showCustomAvatarInput && (
+                      <div className={`p-2.5 mb-3 rounded-xl border flex items-center gap-2 ${
+                        isNight ? 'bg-slate-900 border-slate-700' : 'bg-white border-orange-300'
+                      }`}>
+                        <input
+                          type="text"
+                          maxLength={8}
+                          value={customAvatarInput}
+                          onChange={(e) => setCustomAvatarInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddCustomAvatar();
+                            }
+                          }}
+                          placeholder={language === 'en' ? 'Type or paste emoji (e.g. 🐉, 🌻, 🚀)...' : 'Andika au weka emoji...'}
+                          className={`flex-1 px-3 py-1.5 text-xs rounded-lg border focus:outline-none ${
+                            isNight
+                              ? 'bg-slate-800 text-slate-100 border-slate-700 focus:border-amber-500'
+                              : 'bg-orange-50/30 text-gray-900 border-orange-200 focus:border-orange-500'
+                          }`}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddCustomAvatar}
+                          disabled={!customAvatarInput.trim()}
+                          className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white text-xs font-bold rounded-lg cursor-pointer transition flex items-center gap-1"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>{language === 'en' ? 'Use Avatar' : 'Tumia'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowCustomAvatarInput(false)}
+                          className="p-1.5 text-gray-400 hover:text-gray-600 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Curated Preset Avatars Grid */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className={`text-[11px] font-bold ${
+                          isNight ? 'text-slate-300' : 'text-gray-700'
+                        }`}>
+                          {language === 'en' ? 'Or choose an avatar:' : 'Au chagua avatar:'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowUrlInput(!showUrlInput)}
+                          className="text-[10px] text-orange-600 hover:text-orange-700 underline cursor-pointer"
+                        >
+                          {showUrlInput
+                            ? (language === 'en' ? 'Hide image link' : 'Ficha kiungo')
+                            : (language === 'en' ? 'Or paste image link' : 'Weka kiungo cha mtandaoni')}
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {PRESET_AVATARS.map((av) => (
+                          <button
+                            key={av}
+                            type="button"
+                            onClick={() => {
+                              setSignupAvatar(av);
+                              setSignupProfilePicUrl('');
+                              playChime('pop');
+                            }}
+                            title={`Select ${av}`}
+                            className={`w-8 h-8 rounded-xl text-base border flex items-center justify-center cursor-pointer transition ${
+                              signupAvatar === av && !signupProfilePicUrl
+                                ? 'bg-orange-500 text-white border-orange-600 scale-110 shadow-xs'
+                                : (isNight
+                                    ? 'bg-slate-900 text-slate-100 border-slate-700 hover:bg-slate-700'
+                                    : 'bg-white text-amber-955 border-orange-200 hover:bg-orange-100')
+                            }`}
+                          >
+                            {av}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Optional Image URL Input (if user wants to paste a direct link) */}
+                    {showUrlInput && (
+                      <div className="mt-2.5 pt-2 border-t border-orange-200/50">
+                        <label className={`block text-[10px] font-bold mb-1 ${
+                          isNight ? 'text-slate-300' : 'text-gray-600'
+                        }`}>
+                          {language === 'en' ? 'Web Image URL (Optional):' : 'Kiungo cha Picha Mtandaoni (Si lazima):'}
+                        </label>
+                        <input
+                          type="url"
+                          value={signupProfilePicUrl.startsWith('data:') ? '' : signupProfilePicUrl}
+                          onChange={(e) => setSignupProfilePicUrl(e.target.value)}
+                          placeholder="https://example.com/my-photo.jpg"
+                          className={`w-full px-3 py-1.5 text-[11px] rounded-xl border focus:outline-none ${
+                            isNight
+                              ? 'bg-slate-900 text-slate-100 border-slate-700 focus:border-amber-500'
+                              : 'bg-white text-gray-900 border-orange-200 focus:border-orange-500'
+                          }`}
+                        />
+                      </div>
+                    )}
                   </div>
 
 

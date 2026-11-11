@@ -367,7 +367,7 @@ export const IllustrationReferenceViewer: React.FC<IllustrationReferenceViewerPr
         {(book.downloadPermission || 'yes') === 'watermark' && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none overflow-hidden">
             <div className="text-white/40 text-[9px] sm:text-[10px] font-display font-extrabold uppercase tracking-wider rotate-[-25deg] border-2 border-white/20 px-2.5 py-1 bg-black/15 rounded-lg backdrop-blur-[0.5px]">
-              🎨 PictureBook Copyright • {book.author}
+              PictureBook Copyright • {book.author}
             </div>
           </div>
         )}
@@ -382,10 +382,9 @@ export const IllustrationReferenceViewer: React.FC<IllustrationReferenceViewerPr
           <div className="relative max-w-5xl max-h-[92vh] w-full flex flex-col items-center justify-center" onClick={(e) => e.stopPropagation()}>
             <div className="w-full flex items-center justify-between pb-3 text-white">
               <div className="flex items-center gap-2">
-                <span className="text-lg">🖼️</span>
                 <span className="font-display font-bold text-sm tracking-wide">{page.title || 'Illustration Reference'}</span>
                 <span className="text-xs text-emerald-400 bg-emerald-950/80 border border-emerald-500/40 px-2 py-0.5 rounded-full font-bold">
-                  ✓ {language === 'en' ? 'Full Uncropped' : 'Picha Kamili'}
+                  {language === 'en' ? 'Full Uncropped' : 'Picha Kamili'}
                 </span>
               </div>
               <button
